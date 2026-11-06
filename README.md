@@ -17,33 +17,47 @@ Download from [Releases](../../releases), or the latest build from [Actions](../
 
 ## Use
 
-Paste a path or URL and press Enter, use **Open…**, drop a file on the window, or pass it on the
+The window shows only video. Controls float over the bottom and hide after a couple of seconds
+without mouse movement. Open things with **Open File… (⌘O / Ctrl+O)**, **Open URL… (⌘L / Ctrl+L)**,
+by dropping a file or link on the window, with **⌘V / Ctrl+V** on a copied link, or from the
 command line: `isoplay <file-or-url>`.
+
+The disc type comes from the file's contents, so links without `.iso` in them, `.img` images
+and `BDMV`/`VIDEO_TS` folders all work: DVD5/DVD9, BD25/BD50, and UHD BD66/BD100.
 
 | Key | Action |
 |---|---|
-| ↑ ↓ ← → Enter | move/select in disc menus; mouse clicks work too |
+| ↑ ↓ ← → Enter | move/select in disc menus (mouse clicks work too) |
 | M | disc popup / menu |
 | Space | pause |
-| ← → (normal files), Shift+← → (discs) | seek 10 s |
-| F, double-click | fullscreen (Esc leaves) |
+| ← → (videos), Shift+← → (discs) | seek 10 s |
+| ↑ ↓ (videos) | volume |
+| Page Up / Page Down | previous / next chapter |
+| F | fullscreen (Esc leaves) |
+
+The bar's ♪ and CC buttons pick audio and subtitle tracks. ⋯ holds **Use Disc Menus** and
+**Replay Without Menus**, which goes straight to the main title when a disc menu fails.
 
 ## How it works
 
-- **Disc detection.** For `.iso`, the first MiB is read and checked for `BDMV` or `VIDEO_TS`.
+- **Disc detection.** Anything that isn't a known video extension is checked for an ISO 9660 or
+  UDF volume descriptor at sector 16, then the first 4 MiB are searched for `BDMV` or `VIDEO_TS`.
   DVDs are forced onto VLC's `dvdnav` demuxer, because over HTTP VLC otherwise plays the raw
   MPEG-PS stream and the menus are lost. Blu-rays are picked up by libbluray on their own.
 - **Range cache.** A remote ISO is served to libVLC from a local HTTP endpoint backed by a 4 MiB
   block cache. Menus seek constantly, and each upstream request can cost a second. During playback,
   several blocks are fetched in parallel because one connection to a slow host can't keep up with
   Blu-ray bitrates. The host must support `Range` requests.
-- **BD-J.** `JAVA_HOME` points at the bundled jlink JRE (`java.base`, `java.desktop`, `java.rmi`),
+- **BD-J.** BD-J discs don't need a specific Java version. libbluray 1.4 supports Java 8, 11 and 17
+  (newer releases dropped the SecurityManager it relies on), so every build bundles Java 17 and
+  never uses a system Java. `JAVA_HOME` points at the bundled jlink JRE (`java.base`, `java.desktop`, `java.rmi`),
   and `LIBBLURAY_CP` points at the libbluray jar shipped with that platform's VLC.
 
 ## Limits
 
-- AACS-encrypted discs won't play; the image has to be decrypted already.
-- Some BD-J menus still fail in libbluray. Untick **Disc menus** and press Play to go straight to
+- AACS-encrypted discs (including every retail UHD, AACS 2) won't play; the image has to be
+  decrypted already.
+- Some BD-J menus still fail in libbluray. Use **⋯ → Replay Without Menus** to go straight to
   the main title.
 - The first BD-J menu takes a while over a slow link.
 - macOS builds are arm64 only and not notarized.

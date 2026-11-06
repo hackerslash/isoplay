@@ -30,11 +30,14 @@ if (BASE / "jre").is_dir():
 if sys.platform.startswith("linux"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")  # libVLC embeds into X11 windows only
 
+import time  # noqa: E402
+
 import vlc  # noqa: E402
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal  # noqa: E402
+from PySide6.QtGui import QAction, QCursor, QKeySequence  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QPushButton, QSlider, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QPushButton, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 UA = "Mozilla/5.0 isoplay"
@@ -188,6 +191,21 @@ class RangeCache:
         return H
 
 
+VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mts", ".wmv", ".flv",
+             ".mpg", ".mpeg", ".vob", ".m3u8", ".mpd", ".mp3", ".flac", ".ogg", ".opus", ".wav", ".m4a"}
+DISC_EXT = {".iso", ".img", ".bin", ".udf"}
+
+
+def suffix(src):
+    path = urllib.parse.urlparse(src).path if is_url(src) else src
+    return Path(urllib.parse.unquote(path)).suffix.lower()
+
+
+def iso_signature(data):
+    """ISO 9660 (CD001) or UDF (BEA01) volume descriptor at sector 16: DVD5/9, BD25/50/66/100."""
+    return data[32769:32774] in (b"CD001", b"BEA01")
+
+
 def disc_kind(data):
     if b"BDMV" in data:
         return "bluray"
@@ -196,14 +214,82 @@ def disc_kind(data):
     return None
 
 
-def is_iso(src):
-    path = urllib.parse.urlparse(src).path if is_url(src) else src
-    return urllib.parse.unquote(path).lower().endswith(".iso")
+def sniff(url):
+    try:
+        req = Request(url, headers={"Range": "bytes=32768-32775", "User-Agent": UA})
+        with urlopen(req, timeout=20) as r:
+            return r.status == 206 and iso_signature(b"\0" * 32768 + r.read(8))
+    except OSError:
+        return False
+
+
+def prepare(src):
+    """How libVLC should open src: (mrl, "bluray" | "dvd" | None, RangeCache | None). Blocks on I/O."""
+    ext = suffix(src)
+    if not is_url(src):
+        p = Path(src)
+        if p.is_dir():
+            for sub, kind in (("BDMV", "bluray"), ("VIDEO_TS", "dvd")):
+                if (p / sub).is_dir() or (p.name.upper() == sub):
+                    root = p if (p / sub).is_dir() else p.parent
+                    return ("bluray" if kind == "bluray" else "dvd") + root.as_uri()[4:], kind, None
+            return src, None, None
+        if ext in VIDEO_EXT:
+            return src, None, None
+        with open(src, "rb") as f:
+            data = f.read(BLOCK)
+        return src, (disc_kind(data) if iso_signature(data) else None), None
+    if ext in VIDEO_EXT or (ext not in DISC_EXT and not sniff(src)):
+        return src, None, None
+    proxy = RangeCache(src)
+    data = proxy.read(0, BLOCK)
+    if not iso_signature(data):
+        proxy.close()
+        return src, None, None
+    return proxy.mrl, disc_kind(data), proxy
 
 
 def fmt(ms):
     s = max(ms, 0) // 1000
     return f"{s // 3600}:{s // 60 % 60:02}:{s % 60:02}"
+
+
+CSS = """
+QMainWindow, #welcome { background: #000; }
+#welcome QLabel { color: #8e8e93; font-size: 13px; }
+#welcome QLabel#title { color: #f2f2f7; font-size: 30px; font-weight: 600; }
+#welcome QPushButton, #welcome QToolButton { color: #f2f2f7; background: #2c2c2e; border: none;
+    border-radius: 8px; padding: 0 18px; min-height: 32px; font-size: 13px; }
+#welcome QPushButton:hover, #welcome QToolButton:hover { background: #3a3a3c; }
+#welcome QToolButton:checked { background: #0a84ff; }
+#panel { background: rgba(30, 30, 32, 222); border-radius: 12px; }
+#panel QPushButton { background: transparent; color: #f2f2f7; border: none; font-size: 15px;
+    padding: 4px 7px; min-width: 22px; }
+#panel QPushButton:hover { color: #64d2ff; }
+#panel QLabel { color: #d1d1d6; font-size: 12px; }
+#panel QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,55); border-radius: 2px; }
+#panel QSlider::sub-page:horizontal { background: #f2f2f7; border-radius: 2px; }
+#panel QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; border-radius: 6px;
+    background: #ffffff; }
+#osd { color: #f2f2f7; background: rgba(30, 30, 32, 222); border-radius: 8px; padding: 6px 12px;
+    font-size: 13px; }
+"""
+
+
+class Overlay(QWidget):
+    """Floating child window: the video is a native libVLC surface, so Qt widgets can't paint over it."""
+
+    def __init__(self, owner, clickable):
+        flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint
+        super().__init__(owner, flags if clickable else flags | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setStyleSheet(CSS)
+
+
+class Bridge(QObject):
+    prepared = Signal(int, object)
+    event = Signal(str)
 
 
 class Player(QMainWindow):
@@ -214,148 +300,314 @@ class Player(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("isoplay")
-        self.resize(1100, 680)
+        self.resize(1100, 640)
         self.setAcceptDrops(True)
+        self.setStyleSheet(CSS)
+        self.settings = QSettings("isoplay", "isoplay")
         self.vlc = vlc.Instance(["--no-video-title-show", "--network-caching=3000"]
                                 + (["-vv"] if os.environ.get("ISOPLAY_DEBUG") else []))
         self.mp = self.vlc.media_player_new()
         self.mp.video_set_key_input(False)
         self.mp.video_set_mouse_input(True)
-        self.disc = None
-        self.proxy = None
+        self.disc = self.proxy = self.current = None
+        self.token = 0
+        self.last_pos, self.last_move = QPoint(), 0.0
 
-        self.src = QLineEdit(placeholderText="File path or URL — or drop a file here")
-        self.src.returnPressed.connect(lambda: self.play(self.src.text().strip()))
-        browse = QPushButton("Open…", clicked=self.browse)
-        go = QPushButton("Play", clicked=lambda: self.play(self.src.text().strip()))
-        self.menus = QCheckBox("Disc menus", checked=True,
-                               toolTip="Off: skip menus and start the main title (for menus that fail)")
-        self.top = QWidget()
-        t = QHBoxLayout(self.top)
-        t.setContentsMargins(6, 6, 6, 0)
-        for w in (self.src, browse, go, self.menus):
-            t.addWidget(w)
-
-        self.video = QFrame()
-        self.video.setStyleSheet("background:black")
-        self.video.setAttribute(Qt.WA_NativeWindow)
-        self.video.setFocusPolicy(Qt.StrongFocus)
-
-        self.pause_btn = QPushButton("⏯", clicked=self.mp.pause)
-        self.seek = QSlider(Qt.Horizontal, maximum=1000)
-        self.seek.sliderMoved.connect(lambda v: self.mp.set_position(v / 1000))
-        self.time = QLabel("0:00:00 / 0:00:00")
-        self.menu_btn = QPushButton("Menu", clicked=lambda: self.mp.navigate(vlc.NavigateMode.popup))
-        self.full_btn = QPushButton("⛶", clicked=self.toggle_full)
-        self.bar = QWidget()
-        b = QHBoxLayout(self.bar)
-        b.setContentsMargins(6, 0, 6, 6)
-        for w in (self.pause_btn, self.seek, self.time, self.menu_btn, self.full_btn):
-            b.addWidget(w)
-
-        root = QWidget()
-        v = QVBoxLayout(root)
-        v.setContentsMargins(0, 0, 0, 0)
-        for w in (self.top, self.video, self.bar):
-            v.addWidget(w)
-        v.setStretch(1, 1)
-        self.setCentralWidget(root)
-
-        wid = int(self.video.winId())
-        if sys.platform == "darwin":
-            self.mp.set_nsobject(wid)
-        elif sys.platform == "win32":
-            self.mp.set_hwnd(wid)
-        else:
-            self.mp.set_xwindow(wid)
-
+        self.bridge = Bridge()
+        self.bridge.prepared.connect(self.start)
+        self.bridge.event.connect(self.on_event)
         ev = self.mp.event_manager()
-        ev.event_attach(vlc.EventType.MediaPlayerEncounteredError,
-                        lambda e: QTimer.singleShot(0, lambda: self.status("Playback error — see terminal log")))
-        self.timer = QTimer(self, interval=500, timeout=self.tick)
+        for t, name in ((vlc.EventType.MediaPlayerEncounteredError, "error"),
+                        (vlc.EventType.MediaPlayerVout, "vout"),
+                        (vlc.EventType.MediaPlayerEndReached, "end")):
+            ev.event_attach(t, lambda e, n=name: self.bridge.event.emit(n))
+
+        self.act_open = self.action("Open File…", QKeySequence.Open, self.browse)
+        self.act_url = self.action("Open URL…", "Ctrl+L", self.ask_url)
+        self.act_paste = self.action("Play Copied Link", QKeySequence.Paste, self.paste)
+        self.act_menus = self.action("Use Disc Menus", None, self.menus_changed)
+        self.act_menus.setCheckable(True)
+        self.act_menus.setChecked(self.settings.value("menus", True, type=bool))
+        self.act_main = self.action("Replay Without Menus (Main Title)", None, self.replay_main)
+        self.act_full = self.action("Fullscreen", "F", self.toggle_full)
+        if sys.platform == "darwin":  # native menu bar costs no window space
+            m = self.menuBar().addMenu("File")
+            for a in (self.act_open, self.act_url, self.act_paste):
+                m.addAction(a)
+            m = self.menuBar().addMenu("Playback")
+            for a in (self.act_menus, self.act_main, self.act_full):
+                m.addAction(a)
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.welcome_page())
+        self.video = QFrame()
+        self.video.setStyleSheet("background:#000")
+        self.video.setAttribute(Qt.WA_NativeWindow)
+        self.stack.addWidget(self.video)
+        self.setCentralWidget(self.stack)
+        wid = int(self.video.winId())
+        {"darwin": self.mp.set_nsobject, "win32": self.mp.set_hwnd}.get(sys.platform, self.mp.set_xwindow)(wid)
+
+        self.controls = Overlay(self, clickable=True)
+        self.build_controls()
+        self.osd = Overlay(self, clickable=False)
+        self.osd_label = QLabel(self.osd, objectName="osd")
+        self.osd_until = 0.0
+
+        self.timer = QTimer(self, interval=200, timeout=self.tick)
         self.timer.start()
 
-    def status(self, msg):
-        self.statusBar().showMessage(msg)
+    def action(self, text, key, slot):
+        a = QAction(text, self)
+        if key:
+            a.setShortcut(QKeySequence(key))
+        a.triggered.connect(slot)
+        self.addAction(a)
+        return a
+
+    def welcome_page(self):
+        page = QWidget(objectName="welcome")
+        v = QVBoxLayout(page)
+        v.addStretch()
+        title = QLabel("isoplay", objectName="title", alignment=Qt.AlignCenter)
+        sub = QLabel("Blu-ray · UHD · DVD images with menus, and any video — files or links",
+                     alignment=Qt.AlignCenter)
+        row = QHBoxLayout()
+        row.addStretch()
+        for text, slot in (("Open File…", self.browse), ("Open URL…", self.ask_url)):
+            row.addWidget(QPushButton(text, clicked=slot, cursor=Qt.PointingHandCursor))
+        menus = QToolButton(cursor=Qt.PointingHandCursor)
+        menus.setDefaultAction(self.act_menus)
+        menus.setText("Disc menus")
+        row.addWidget(menus)
+        row.addStretch()
+        mod = "⌘" if sys.platform == "darwin" else "Ctrl+"
+        hint = QLabel(f"Drop a file here  ·  {mod}V plays a copied link", alignment=Qt.AlignCenter)
+        for w in (title, sub):
+            v.addWidget(w)
+        v.addSpacing(18)
+        v.addLayout(row)
+        v.addSpacing(10)
+        v.addWidget(hint)
+        v.addStretch()
+        return page
+
+    def build_controls(self):
+        panel = QFrame(self.controls, objectName="panel")
+        lay = QVBoxLayout(self.controls)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(panel)
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(10, 4, 10, 4)
+        row.setSpacing(4)
+
+        def btn(text, tip, slot):
+            b = QPushButton(text, toolTip=tip, clicked=slot, focusPolicy=Qt.NoFocus, cursor=Qt.PointingHandCursor)
+            row.addWidget(b)
+            return b
+
+        self.play_btn = btn("❚❚", "Play/Pause (Space)", self.mp.pause)
+        self.pos_lbl = QLabel("0:00:00")
+        row.addWidget(self.pos_lbl)
+        self.seek = QSlider(Qt.Horizontal, maximum=10000, focusPolicy=Qt.NoFocus)
+        self.seek.sliderReleased.connect(lambda: self.mp.set_position(self.seek.value() / 10000))
+        row.addWidget(self.seek, 1)
+        self.len_lbl = QLabel("0:00:00")
+        row.addWidget(self.len_lbl)
+        self.menu_btn = btn("☰", "Disc menu (M)", lambda: self.mp.navigate(vlc.NavigateMode.popup))
+        btn("♪", "Audio track", lambda: self.track_menu(self.audio_btn, self.mp.audio_get_track_description,
+                                                          self.mp.audio_get_track, self.mp.audio_set_track))
+        self.audio_btn = row.itemAt(row.count() - 1).widget()
+        btn("CC", "Subtitles", lambda: self.track_menu(self.sub_btn, self.mp.video_get_spu_description,
+                                                       self.mp.video_get_spu, self.mp.video_set_spu))
+        self.sub_btn = row.itemAt(row.count() - 1).widget()
+        self.vol = QSlider(Qt.Horizontal, maximum=100, value=100, focusPolicy=Qt.NoFocus, fixedWidth=70,
+                           toolTip="Volume (↑/↓ on video files)")
+        self.vol.valueChanged.connect(self.mp.audio_set_volume)
+        row.addWidget(self.vol)
+        more = btn("⋯", "More", None)
+        menu = QMenu(more)
+        for a in (self.act_open, self.act_url, self.act_paste, None, self.act_menus, self.act_main):
+            menu.addAction(a) if a else menu.addSeparator()
+        more.setMenu(menu)
+        more.setStyleSheet("QPushButton::menu-indicator { width: 0; }")
+        btn("⛶", "Fullscreen (F)", self.toggle_full)
+
+    def track_menu(self, button, describe, current, select):
+        menu = QMenu(self)
+        cur = current()
+        for tid, name in describe() or []:
+            a = menu.addAction(name.decode(errors="replace") if isinstance(name, bytes) else str(name))
+            a.setCheckable(True)
+            a.setChecked(tid == cur)
+            a.triggered.connect(lambda _=False, t=tid: select(t))
+        if menu.isEmpty():
+            menu.addAction("None").setEnabled(False)
+        menu.exec(button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+
+    # --- opening ---------------------------------------------------------------------------------
 
     def browse(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Open", "", "Discs and media (*.iso *.mkv *.mp4 *.m2ts *.ts *.avi *.mov *.webm);;All files (*)")
+        f, _ = QFileDialog.getOpenFileName(
+            self, "Open", self.settings.value("dir", ""),
+            "Discs and video (*.iso *.img *.mkv *.mp4 *.m4v *.m2ts *.ts *.avi *.mov *.webm *.vob);;All files (*)")
         if f:
+            self.settings.setValue("dir", str(Path(f).parent))
             self.play(f)
+
+    def ask_url(self):
+        clip = QApplication.clipboard().text().strip()
+        url, ok = QInputDialog.getText(self, "Open URL", "Link to a disc image or video:",
+                                       text=clip if is_url(clip) else "")
+        if ok and url.strip():
+            self.play(url.strip())
+
+    def paste(self):
+        text = QApplication.clipboard().text().strip()
+        if is_url(text) or (text and Path(text).exists()):
+            self.play(text)
+        else:
+            self.flash("Clipboard has no link or file path")
+
+    def menus_changed(self):
+        self.settings.setValue("menus", self.act_menus.isChecked())
+
+    def replay_main(self):
+        if self.current:
+            self.act_menus.setChecked(False)
+            self.menus_changed()
+            self.play(self.current)
 
     def play(self, src):
         if not src:
             return
-        self.src.setText(src)
+        self.token += 1
         self.mp.stop()
         if self.proxy:
             self.proxy.close()
             self.proxy = None
-        self.disc = None
-        mrl = src
-        if is_iso(src):
-            self.status("Reading disc …")
-            QApplication.processEvents()
+        self.current, self.disc = src, None
+        name = urllib.parse.unquote(src.rstrip("/").rsplit("/", 1)[-1].split("?")[0])
+        self.setWindowTitle(name or "isoplay")
+        self.stack.setCurrentWidget(self.video)
+        self.flash("Opening…", sticky=True)
+        token = self.token
+
+        def work():
             try:
-                if is_url(src):
-                    self.proxy = RangeCache(src)
-                    mrl = self.proxy.mrl
-                    data = self.proxy.read(0, 1 << 20)
-                else:
-                    with open(src, "rb") as f:
-                        data = f.read(1 << 20)
-                self.disc = disc_kind(data)
-            except Exception as e:
-                self.status(f"Cannot read: {e}")
-                return
-        media = self.vlc.media_new(mrl) if is_url(mrl) else self.vlc.media_new_path(mrl)
+                result = prepare(src)
+            except Exception as e:  # noqa: BLE001 — shown to the user
+                result = e
+            self.bridge.prepared.emit(token, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def start(self, token, result):
+        if token != self.token:  # a newer play() superseded this one
+            if isinstance(result, tuple) and result[2]:
+                result[2].close()
+            return
+        if isinstance(result, Exception):
+            self.flash(f"Can't open: {result}", seconds=8)
+            return
+        mrl, self.disc, self.proxy = result
+        menus = self.act_menus.isChecked()
+        media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
         media.add_option(f":http-user-agent={UA}")
-        if self.disc == "dvd" and self.menus.isChecked():
+        if self.disc == "dvd" and menus and not mrl.startswith("dvd:"):
             media.add_option(":demux=dvdnav")  # auto-probe picks raw PS over HTTP and loses menus
-        if self.disc == "bluray" and not self.menus.isChecked():
+        if self.disc == "bluray" and not menus:
             media.add_option(":no-bluray-menu")
         self.mp.set_media(media)
         self.mp.play()
-        menus = self.menus.isChecked()
-        self.status({"bluray": "Blu-ray — " + ("menus on (arrows/Enter, M = popup menu)" if menus else "main title"),
-                     "dvd": "DVD — " + ("menus on (arrows/Enter, M = menu)" if menus else "no menus")}
-                    .get(self.disc, "Playing"))
-        self.setWindowTitle(f"isoplay — {urllib.parse.unquote(src.rsplit('/', 1)[-1])}")
-        self.video.setFocus()
+        label = {"bluray": "Blu-ray", "dvd": "DVD"}.get(self.disc)
+        self.flash(f"{label} — loading {'menu' if menus else 'main title'}…" if label else "Loading…", sticky=True)
+        self.menu_btn.setVisible(bool(self.disc) and menus)
+
+    def on_event(self, name):
+        if name == "vout":
+            self.flash({"bluray": "Blu-ray", "dvd": "DVD"}.get(self.disc, ""), seconds=2 if self.disc else 0)
+        elif name == "error":
+            hint = "  — try Replay Without Menus (⋯)" if self.disc and self.act_menus.isChecked() else ""
+            self.flash(f"Can't play this{hint}", seconds=10)
+
+    # --- overlay -----------------------------------------------------------------------------------
+
+    def flash(self, text, seconds=3.0, sticky=False):
+        self.osd_label.setText(text)
+        self.osd_label.adjustSize()
+        self.osd.resize(self.osd_label.size())
+        self.osd_until = float("inf") if sticky else (time.monotonic() + seconds if text else 0)
+        self.place()
+
+    def place(self):
+        top_left = self.video.mapToGlobal(QPoint(0, 0)) if self.stack.currentWidget() is self.video \
+            else self.stack.mapToGlobal(QPoint(0, 0))
+        area = QRect(top_left, self.stack.size())
+        w = min(820, area.width() - 32)
+        self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 18 - 44, w, 44)
+        self.osd.move(area.left() + 16, area.top() + 16)
 
     def tick(self):
-        length = self.mp.get_length()
-        if not self.seek.isSliderDown():
-            self.seek.setValue(int(self.mp.get_position() * 1000))
-        self.time.setText(f"{fmt(self.mp.get_time())} / {fmt(length)}")
+        now = time.monotonic()
+        pos = QCursor.pos()
+        if pos != self.last_pos:
+            self.last_pos = pos
+            if self.frameGeometry().contains(pos):
+                self.last_move = now
+        active = QApplication.applicationState() == Qt.ApplicationActive and not self.isMinimized()
+        on_video = self.stack.currentWidget() is self.video
+        playing = self.mp.is_playing()
+        show = active and on_video and (not playing or now - self.last_move < 2.5
+                                        or self.controls.geometry().contains(pos))
+        if show != self.controls.isVisible():
+            self.place()
+            self.controls.setVisible(show)
+        osd = active and on_video and now < self.osd_until
+        if osd != self.osd.isVisible():
+            self.place()
+            self.osd.setVisible(osd)
+        if show:
+            self.play_btn.setText("❚❚" if playing else "▶")
+            if not self.seek.isSliderDown():
+                self.seek.setValue(int(self.mp.get_position() * 10000))
+            self.pos_lbl.setText(fmt(self.mp.get_time()))
+            self.len_lbl.setText(fmt(self.mp.get_length()))
+
+    def moveEvent(self, e):
+        self.place()
+        super().moveEvent(e)
+
+    def resizeEvent(self, e):
+        self.place()
+        super().resizeEvent(e)
 
     def toggle_full(self):
-        full = not self.isFullScreen()
-        self.top.setVisible(not full)
-        self.bar.setVisible(not full)
-        self.statusBar().setVisible(not full)
-        self.showFullScreen() if full else self.showNormal()
-        self.video.setFocus()
+        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        QTimer.singleShot(300, self.place)
+
+    # --- input -------------------------------------------------------------------------------------
 
     def keyPressEvent(self, e):
         k, shift = e.key(), e.modifiers() & Qt.ShiftModifier
-        if k in (Qt.Key_Left, Qt.Key_Right) and (shift or not self.disc):
+        disc_nav = self.disc and self.act_menus.isChecked()
+        if k in (Qt.Key_Left, Qt.Key_Right) and (shift or not disc_nav):
             self.mp.set_time(max(0, self.mp.get_time() + (10000 if k == Qt.Key_Right else -10000)))
-        elif k in self.NAV:
+        elif k in (Qt.Key_Up, Qt.Key_Down) and not disc_nav:
+            self.vol.setValue(self.vol.value() + (5 if k == Qt.Key_Up else -5))
+        elif k in self.NAV and disc_nav:
             self.mp.navigate(self.NAV[k])
         elif k == Qt.Key_Space:
             self.mp.pause()
         elif k == Qt.Key_M:
             self.mp.navigate(vlc.NavigateMode.popup)
-        elif k == Qt.Key_F:
-            self.toggle_full()
+        elif k in (Qt.Key_PageUp, Qt.Key_PageDown):
+            self.mp.next_chapter() if k == Qt.Key_PageDown else self.mp.previous_chapter()
         elif k == Qt.Key_Escape and self.isFullScreen():
             self.toggle_full()
         else:
             super().keyPressEvent(e)
-
-    def mouseDoubleClickEvent(self, e):
-        self.toggle_full()
+        self.last_move = time.monotonic()
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() or e.mimeData().hasText():
@@ -370,6 +622,7 @@ class Player(QMainWindow):
             self.play(md.text().strip())
 
     def closeEvent(self, e):
+        self.timer.stop()
         self.mp.stop()
         if self.proxy:
             self.proxy.close()
@@ -398,6 +651,7 @@ def main():
     if "--check" in sys.argv:
         return check()
     app = QApplication(sys.argv)
+    app.setApplicationName("isoplay")
     w = Player()
     w.show()
     if len(sys.argv) > 1:
