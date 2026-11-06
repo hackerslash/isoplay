@@ -33,8 +33,9 @@ if sys.platform.startswith("linux"):
 import time  # noqa: E402
 
 import vlc  # noqa: E402
-from PySide6.QtCore import QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal  # noqa: E402
-from PySide6.QtGui import QAction, QCursor, QKeySequence  # noqa: E402
+from PySide6.QtCore import QObject, QPoint, QRect, QSettings, QSize, Qt, QTimer, Signal  # noqa: E402
+from PySide6.QtGui import QAction, QCursor, QIcon, QImage, QKeySequence, QPainter, QPixmap  # noqa: E402
+from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
     QPushButton, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
@@ -263,9 +264,8 @@ QMainWindow, #welcome { background: #000; }
 #welcome QPushButton:hover, #welcome QToolButton:hover { background: #3a3a3c; }
 #welcome QToolButton:checked { background: #0a84ff; }
 #panel { background: rgba(30, 30, 32, 222); border-radius: 12px; }
-#panel QPushButton { background: transparent; color: #f2f2f7; border: none; font-size: 15px;
-    padding: 4px 7px; min-width: 22px; }
-#panel QPushButton:hover { color: #64d2ff; }
+#panel QPushButton { background: transparent; border: none; border-radius: 6px; padding: 5px; }
+#panel QPushButton:hover { background: rgba(255, 255, 255, 30); }
 #panel QLabel { color: #d1d1d6; font-size: 12px; }
 #panel QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,55); border-radius: 2px; }
 #panel QSlider::sub-page:horizontal { background: #f2f2f7; border-radius: 2px; }
@@ -274,6 +274,37 @@ QMainWindow, #welcome { background: #000; }
 #osd { color: #f2f2f7; background: rgba(30, 30, 32, 222); border-radius: 8px; padding: 6px 12px;
     font-size: 13px; }
 """
+
+
+ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
+    "play": "M8 5v14l11-7z",
+    "pause": "M6 5h4v14H6zm8 0h4v14h-4z",
+    "menu": "M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z",
+    "audio": "M12 3v10.55A4 4 0 1 0 14 17V7h4V3z",
+    "subs": "M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM4 12h4v2H4zm10 6H4v-2h10z"
+            "m6 0h-4v-2h4zm0-4H10v-2h10z",
+    "volume": "M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.48 4.48 0 0 0 16.5 12zM14 3.23v2.06"
+              "a7 7 0 0 1 0 13.42v2.06A9 9 0 0 0 14 3.23z",
+    "muted": "M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zM19 12c0 .94-.2 1.82-.54 2.64"
+             "l1.51 1.51A8.8 8.8 0 0 0 21 12a9 9 0 0 0-7-8.77v2.06A7 7 0 0 1 19 12zM4.27 3 3 4.27 7.73 9H3v6h4"
+             "l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9z"
+             "M12 4 9.91 6.09 12 8.18V4z",
+    "more": "M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
+    "full": "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z",
+    "unfull": "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z",
+}
+
+
+def svg_icon(svg, size=48):
+    """Render SVG markup or an ICONS key to a QIcon (QSvgRenderer, so no image-format plugin needed)."""
+    if svg in ICONS:
+        svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#f2f2f7" d="{ICONS[svg]}"/></svg>'
+    img = QImage(size, size, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    QSvgRenderer(svg.encode() if isinstance(svg, str) else svg).render(p)
+    p.end()
+    return QIcon(QPixmap.fromImage(img))
 
 
 class Overlay(QWidget):
@@ -401,12 +432,16 @@ class Player(QMainWindow):
         row.setContentsMargins(10, 4, 10, 4)
         row.setSpacing(4)
 
-        def btn(text, tip, slot):
-            b = QPushButton(text, toolTip=tip, clicked=slot, focusPolicy=Qt.NoFocus, cursor=Qt.PointingHandCursor)
+        def btn(icon, tip, slot):
+            b = QPushButton(toolTip=tip, focusPolicy=Qt.NoFocus, cursor=Qt.PointingHandCursor,
+                            icon=svg_icon(icon), iconSize=QSize(20, 20))
+            if slot:
+                b.clicked.connect(slot)
             row.addWidget(b)
             return b
 
-        self.play_btn = btn("❚❚", "Play/Pause (Space)", self.mp.pause)
+        self.play_btn = btn("pause", "Play/Pause (Space)", self.mp.pause)
+        self.play_icons = {True: svg_icon("pause"), False: svg_icon("play")}
         self.pos_lbl = QLabel("0:00:00")
         row.addWidget(self.pos_lbl)
         self.seek = QSlider(Qt.Horizontal, maximum=10000, focusPolicy=Qt.NoFocus)
@@ -414,24 +449,27 @@ class Player(QMainWindow):
         row.addWidget(self.seek, 1)
         self.len_lbl = QLabel("0:00:00")
         row.addWidget(self.len_lbl)
-        self.menu_btn = btn("☰", "Disc menu (M)", lambda: self.mp.navigate(vlc.NavigateMode.popup))
-        btn("♪", "Audio track", lambda: self.track_menu(self.audio_btn, self.mp.audio_get_track_description,
-                                                          self.mp.audio_get_track, self.mp.audio_set_track))
-        self.audio_btn = row.itemAt(row.count() - 1).widget()
-        btn("CC", "Subtitles", lambda: self.track_menu(self.sub_btn, self.mp.video_get_spu_description,
-                                                       self.mp.video_get_spu, self.mp.video_set_spu))
-        self.sub_btn = row.itemAt(row.count() - 1).widget()
+        self.menu_btn = btn("menu", "Disc menu (M)", lambda: self.mp.navigate(vlc.NavigateMode.popup))
+        self.audio_btn = btn("audio", "Audio track", lambda: self.track_menu(
+            self.audio_btn, self.mp.audio_get_track_description, self.mp.audio_get_track, self.mp.audio_set_track))
+        self.sub_btn = btn("subs", "Subtitles", lambda: self.track_menu(
+            self.sub_btn, self.mp.video_get_spu_description, self.mp.video_get_spu, self.mp.video_set_spu))
+        self.mute_btn = btn("volume", "Mute", self.toggle_mute)
         self.vol = QSlider(Qt.Horizontal, maximum=100, value=100, focusPolicy=Qt.NoFocus, fixedWidth=70,
                            toolTip="Volume (↑/↓ on video files)")
         self.vol.valueChanged.connect(self.mp.audio_set_volume)
         row.addWidget(self.vol)
-        more = btn("⋯", "More", None)
+        more = btn("more", "More", None)
         menu = QMenu(more)
         for a in (self.act_open, self.act_url, self.act_paste, None, self.act_menus, self.act_main):
             menu.addAction(a) if a else menu.addSeparator()
         more.setMenu(menu)
         more.setStyleSheet("QPushButton::menu-indicator { width: 0; }")
-        btn("⛶", "Fullscreen (F)", self.toggle_full)
+        self.full_btn = btn("full", "Fullscreen (F)", self.toggle_full)
+
+    def toggle_mute(self):
+        self.mp.audio_toggle_mute()
+        self.mute_btn.setIcon(svg_icon("volume" if self.mp.audio_get_mute() == 0 else "muted"))
 
     def track_menu(self, button, describe, current, select):
         menu = QMenu(self)
@@ -568,7 +606,8 @@ class Player(QMainWindow):
             self.place()
             self.osd.setVisible(osd)
         if show:
-            self.play_btn.setText("❚❚" if playing else "▶")
+            if self.play_btn.icon().cacheKey() != self.play_icons[bool(playing)].cacheKey():
+                self.play_btn.setIcon(self.play_icons[bool(playing)])
             if not self.seek.isSliderDown():
                 self.seek.setValue(int(self.mp.get_position() * 10000))
             self.pos_lbl.setText(fmt(self.mp.get_time()))
@@ -583,6 +622,7 @@ class Player(QMainWindow):
         super().resizeEvent(e)
 
     def toggle_full(self):
+        self.full_btn.setIcon(svg_icon("full" if self.isFullScreen() else "unfull"))
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
         QTimer.singleShot(300, self.place)
 
@@ -652,6 +692,7 @@ def main():
         return check()
     app = QApplication(sys.argv)
     app.setApplicationName("isoplay")
+    app.setWindowIcon(svg_icon((BASE / "assets/icon.svg").read_bytes(), 256))
     w = Player()
     w.show()
     if len(sys.argv) > 1:

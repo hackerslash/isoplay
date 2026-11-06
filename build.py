@@ -110,6 +110,23 @@ def jre():
         "--compress=2", "--output", BUILD / "jre")
 
 
+def icon_png():
+    """Render assets/icon.svg to a 1024 px PNG; PyInstaller turns it into .icns/.ico via Pillow."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication, QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+    app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841
+    img = QImage(1024, 1024, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    QSvgRenderer(str(ROOT / "assets/icon.svg")).render(p)
+    p.end()
+    out = BUILD / "icon.png"
+    img.save(str(out))
+    return out
+
+
 def main():
     shutil.rmtree(DIST, ignore_errors=True)
     for d in (STAGE, BUILD / "jre", BUILD / "pyinstaller"):
@@ -119,6 +136,8 @@ def main():
     jre()
 
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "isoplay",
+        "--icon", icon_png(), "--add-data", f"{ROOT / 'assets/icon.svg'}{os.pathsep}assets",
+        "--osx-bundle-identifier", "io.github.hackerslash.isoplay",
         "--workpath", BUILD / "pyinstaller", "--distpath", DIST, ROOT / "isoplay.py")
 
     if sys.platform == "darwin":
