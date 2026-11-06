@@ -17,26 +17,32 @@ Download from [Releases](../../releases), or the latest build from [Actions](../
 
 ## Use
 
-The window shows only video. Controls float over the bottom and hide after a couple of seconds
-without mouse movement. Open things with **Open File… (⌘O / Ctrl+O)**, **Open URL… (⌘L / Ctrl+L)**,
-by dropping a file or link on the window, with **⌘V / Ctrl+V** on a copied link, or from the
-command line: `isoplay <file-or-url>`.
+The empty window lists recent discs and videos; click one to play it again. Open something new
+with **Open File… (⌘O / Ctrl+O)** or **Open Location… (⌘L / Ctrl+L)**, drop a file or link on the
+window, press **⌘V / Ctrl+V** with a link copied, or run `isoplay <file-or-url>`.
+
+While playing, the window is all picture. Move the mouse and a small control panel fades in at
+the bottom; it fades out, along with the cursor, after two seconds of stillness. Status messages
+(loading, volume, chapter, track changes) appear briefly in the top-left corner.
 
 The disc type comes from the file's contents, so links without `.iso` in them, `.img` images
 and `BDMV`/`VIDEO_TS` folders all work: DVD5/DVD9, BD25/BD50, and UHD BD66/BD100.
 
 | Key | Action |
 |---|---|
-| ↑ ↓ ← → Enter | move/select in disc menus (mouse clicks work too) |
-| M | disc popup / menu |
-| Space | pause |
-| ← → (videos), Shift+← → (discs) | seek 10 s |
-| ↑ ↓ (videos) | volume |
-| Page Up / Page Down | previous / next chapter |
-| F | fullscreen (Esc leaves) |
+| ↑ ↓ ← → Return | move and select in disc menus (clicking works too) |
+| M | disc popup menu |
+| Space | play/pause |
+| ← → on videos, Shift+← → on discs | seek 10 s |
+| ↑ ↓ on videos | volume |
+| Page Up / Page Down | previous or next chapter |
+| F, ⌃⌘F / F11 | full screen (Esc leaves) |
+| ⌘W / Ctrl+W | close the video and return to Recent |
 
-The bar's ♪ and CC buttons pick audio and subtitle tracks. ⋯ holds **Use Disc Menus** and
-**Replay Without Menus**, which goes straight to the main title when a disc menu fails.
+The control panel's track button lists audio and subtitle tracks; the time on the right switches
+between remaining and total. **Start discs at their menu** (on the empty window and in the
+Playback menu) decides how discs open. When a disc's menu fails, **Playback → Play Main Title
+Without Menus** goes straight to the movie.
 
 ## How it works
 
@@ -57,8 +63,8 @@ The bar's ♪ and CC buttons pick audio and subtitle tracks. ⋯ holds **Use Dis
 
 - AACS-encrypted discs (including every retail UHD, AACS 2) won't play; the image has to be
   decrypted already.
-- Some BD-J menus still fail in libbluray. Use **⋯ → Replay Without Menus** to go straight to
-  the main title.
+- Some BD-J menus still fail in libbluray. Use **Play Main Title Without Menus** to go straight
+  to the movie.
 - The first BD-J menu takes a while over a slow link.
 - macOS builds are arm64 only and not notarized.
 

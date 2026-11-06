@@ -37,7 +37,7 @@ assert prepare(str(tmp / "film.mkv")) == (str(tmp / "film.mkv"), None, None)
 mrl, kind, _ = prepare(str(tmp / "Disc"))
 assert kind == "bluray" and mrl.startswith("bluray:///"), mrl
 assert prepare(str(tmp / "Disc/BDMV"))[0] == mrl
-assert fmt(3_725_000) == "1:02:05"
+assert fmt(3_725_000) == "1:02:05" and fmt(65_000) == "1:05"
 
 DATA = image(b"BEA01", b"VIDEO_TS")
 
