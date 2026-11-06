@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -6,6 +7,7 @@ from urllib.request import Request, urlopen
 import isoplay
 from isoplay import RangeCache, disc_kind, fmt, iso_signature, prepare, suffix
 
+assert os.path.isfile(os.environ["SSL_CERT_FILE"])  # https links fail without a trust store
 assert disc_kind(b"..\x08BDMV..") == "bluray"
 assert disc_kind(b"..VIDEO_TS..") == "dvd"
 assert disc_kind(b"nothing") is None

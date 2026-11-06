@@ -29,6 +29,9 @@ if VLC_DIR.is_dir():
         ctypes.CDLL(str(VLC_DIR / "lib/libvlccore.so.9"), mode=ctypes.RTLD_GLOBAL)
 if (BASE / "jre").is_dir():
     os.environ["JAVA_HOME"] = str(BASE / "jre")
+import certifi  # noqa: E402
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())  # frozen builds inherit the build host's missing trust store
+
 if sys.platform.startswith("linux"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")  # libVLC embeds into X11 windows only
 
@@ -47,7 +50,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMenu, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 UA = "Mozilla/5.0 isoplay"
 
 
