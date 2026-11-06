@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Linux VLC packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvlc5 libvlccore9 vlc-plugin-base \
+            vlc-plugin-video-output libbluray-bdj libxcb-cursor0
+      - run: pip install -r requirements.txt
+      - run: python test_isoplay.py
+        if: runner.os == 'Linux'
+      - run: python build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isoplay-${{ runner.os }}
+          path: dist/isoplay-*
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/isoplay-*
