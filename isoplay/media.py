@@ -80,6 +80,7 @@ class Upstream:
         # Files on one share reuse each other's connections: one per thread per file ran to hundreds.
         self.local, self.lock, self.connections = ((share.local, share.lock, share.connections) if share
                                                    else (threading.local(), threading.Lock(), []))
+        self.throttled = self.closed = False
 
     def _connection(self):
         url = self.url
@@ -108,6 +109,8 @@ class Upstream:
     def get(self, start, end):
         """One byte range, read in full so the connection is ready for the next block."""
         for attempt in range(3):
+            if self.closed:  # read-ahead still queued when playback stopped; don't keep retrying it
+                raise OSError("the stream was closed")
             connection, url = self._connection()
             parts = urllib.parse.urlsplit(url)
             try:
@@ -134,12 +137,19 @@ class Upstream:
                 continue
             if response.will_close:
                 self._drop()
+            if response.status == 429 and attempt < 2:  # a CDN throttling a burst; it clears in seconds
+                trace(f"upstream {start}-{end} throttled (429), retrying")
+                self.throttled = True
+                wait = response.getheader("Retry-After", "")
+                time.sleep(min(int(wait), 10) if wait.isdigit() else 2 ** attempt)
+                continue
             if response.status >= 400:  # urlopen raised these; http.client hands back the error page
                 raise OSError(f"the server answered {response.status} {response.reason}")
             return _Body(response.status, response.headers, data)
         raise OSError("the server kept redirecting the disc image")
 
     def close(self):
+        self.closed = True
         with self.lock:
             connections, self.connections = self.connections, []
         for connection in connections:
@@ -166,26 +176,44 @@ class Served:
             self.view.close()
 
 
+RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
+# How far read-ahead runs past the player: ~20 s of UHD. libVLC's own buffer stays short so a
+# start or seek is quick; this one fills in the background while it plays.
+AHEAD = 160 << 20
+
+
 class Blocks:
     """A block cache with parallel read-ahead over one remote file.
 
     libbluray/dvdnav seek constantly and each upstream request costs ~1 s, so menus need the cache;
     one upstream connection (~1.5 MB/s on worker hosts) is too slow for Blu-ray, so playback needs
-    several blocks in flight at once.
+    several requests in flight at once.
 
     Block size is a latency/throughput trade. Opening an encrypted DVD makes libdvdcss probe
     sectors scattered over the whole image, and each probe waits for a whole block: on a host
     that gives ~85 KB/s per connection a 4 MiB block is ~50 s of stall, a 512 KiB one ~7 s.
-    Sequential throughput is kept up by holding more blocks in flight instead.
+    So a block a reader waits on is fetched alone, while read-ahead goes out in RUN-sized
+    requests: CDNs refuse a dozen connections at once (429, then connection refused), and a few
+    large requests carry the same throughput as many small ones.
     """
     # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
 
-    def __init__(self, url, keep=512, ahead=14, size=None, pool=None, bs=None, upstream=None):
-        self.url, self.keep, self.ahead, self.bs = url, keep, ahead, bs or BLOCK
+    def __init__(self, url, keep=512, ahead=None, size=None, pool=None, bs=None, upstream=None, background=None,
+                 streams=6):
+        self.url, self.keep, self.bs, self.streams = url, keep, bs or BLOCK, streams
+        self.ahead = AHEAD // self.bs if ahead is None else ahead  # in blocks
+        self.run = max(1, RUN // self.bs)
         self.upstream = upstream or Upstream(url)
-        self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
-        self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(ahead + 2), True)
+        self.blocks, self.pending, self.lock, self.requests = OrderedDict(), {}, threading.Lock(), 0
+        self.streak = [-2, -2]  # first and last block of the reader's current in-order run
+        self.warming = {}  # block -> (job, first, futures) still queued on a background pool
+        self.background = background  # where read-ahead queues, if not behind readers in `pool`
+        self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(self._streams() + 2), True)
         self.size = self._size() if size is None else size  # a share already knows it
+
+    def _streams(self):
+        """Read-ahead requests to hold open at once: halved for good once the host throttles."""
+        return max(1, self.streams // 2) if self.upstream.throttled else self.streams
 
     def _get(self, start, end):
         return self.upstream.get(start, end)
@@ -197,9 +225,9 @@ class Blocks:
                               "Download the file first")
             return int(r.headers["Content-Range"].rsplit("/", 1)[1])
 
-    def _load(self, i):
-        start = i * self.bs
-        end = min(start + self.bs, self.size) - 1
+    def _fetch(self, first, futures):
+        start = first * self.bs
+        end = min((first + len(futures)) * self.bs, self.size) - 1
         try:
             for attempt in range(3):
                 try:
@@ -211,15 +239,61 @@ class Blocks:
                     if attempt == 2:
                         raise
             else:
-                raise OSError(f"short read at block {i}")
+                raise OSError(f"short read at block {first}")
+            parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             with self.lock:
-                self.blocks[i] = data
+                for k, part in enumerate(parts):
+                    self.blocks[first + k] = part
                 while len(self.blocks) > self.keep:
                     self.blocks.popitem(last=False)
-            return data
+            for future, part in zip(futures, parts):
+                future.set_result(part)
+        except BaseException as e:
+            for future in futures:
+                if not future.done():
+                    future.set_exception(e)
         finally:
             with self.lock:
-                self.pending.pop(i, None)
+                for k in range(len(futures)):
+                    self.pending.pop(first + k, None)
+                    self.warming.pop(first + k, None)
+                self.requests -= 1
+
+    def _queue(self, first, last, pool=None):
+        """Fetch blocks [first, last) in one request. Lock held; none of them cached or pending."""
+        futures = [Future() for _ in range(first, last)]
+        for k, future in enumerate(futures):
+            self.pending[first + k] = future
+        self.requests += 1
+        job = (pool or self.pool).submit(self._fetch, first, futures)
+        if pool:
+            for k in range(len(futures)):
+                self.warming[first + k] = (job, first, futures)
+
+    def _promote(self, i):
+        """A reader needs block i, still queued behind background fetches: fetch it now instead."""
+        entry = self.warming.get(i)
+        if entry and entry[0].cancel():
+            _, first, futures = entry
+            for k in range(len(futures)):
+                self.warming.pop(first + k, None)
+            self.pool.submit(self._fetch, first, futures)
+
+    def _queue_span(self, first, last, limit=None, pool=None):
+        """Queue the missing blocks of [first, last) in runs, stopping at `limit` requests in flight."""
+        with self.lock:
+            i = first
+            while i < last:
+                if i in self.blocks or i in self.pending:
+                    i += 1
+                    continue
+                if limit is not None and self.requests >= limit:
+                    return
+                j = i + 1
+                while j < min(last, i + self.run) and j not in self.blocks and j not in self.pending:
+                    j += 1
+                self._queue(i, j, pool)
+                i = j
 
     def block(self, i):
         with self.lock:
@@ -229,13 +303,19 @@ class Blocks:
                 f.set_result(self.blocks[i])
                 return f
             if i not in self.pending:
-                self.pending[i] = self.pool.submit(self._load, i)
+                self._queue(i, i + 1)
+            else:
+                self._promote(i)
             return self.pending[i]
 
-    def want(self, pos, n):
-        """Queue the blocks under a span without waiting for them."""
-        for i in range(pos // self.bs, (min(pos + n, self.size) + self.bs - 1) // self.bs):
-            self.block(i)
+    def peek(self, pos, n):
+        """A few bytes straight from upstream, without fetching or caching the block around them."""
+        with self._get(pos, pos + n - 1) as r:
+            return r.read()
+
+    def want(self, pos, n, pool=None):
+        """Queue the blocks under a span without waiting for them, on `pool` if given."""
+        self._queue_span(pos // self.bs, (min(pos + n, self.size) + self.bs - 1) // self.bs, pool=pool)
 
     def read(self, pos, n):
         self.want(pos, n)  # queue the whole span before waiting on any of it
@@ -249,24 +329,33 @@ class Blocks:
         return bytes(out)
 
     def prefetch(self, pos):
+        # The block a reader needs goes first and alone; read-ahead behind it never delays it.
         first = pos // self.bs
-        # Queue the requested block before its neighbours, and stop once enough is in flight:
-        # speculative blocks must never delay one a reader is already waiting on.
-        for i in range(first, min(first + self.ahead + 1, (self.size + self.bs - 1) // self.bs)):
-            if i > first and len(self.pending) >= self.ahead:
-                return
-            self.block(i)
+        self.block(first)
+        # Read-ahead grows with how far the reader has gone on in order, so a probe or a menu clip
+        # glanced at costs one run, not a window per file; playback reaches the full window in seconds.
+        with self.lock:
+            if not self.streak[0] <= first <= self.streak[1] + 1:
+                self.streak = [first, first]
+            self.streak[1] = max(self.streak[1], first)
+            ahead = min(self.ahead, self.run + 2 * (first - self.streak[0]))
+        last = min(first + 1 + ahead, (self.size + self.bs - 1) // self.bs)
+        self._queue_span(first + 1, last, limit=self._streams() + 1, pool=self.background)
 
     def close(self):
         if self.own_pool:
             self.pool.shutdown(wait=False, cancel_futures=True)
+        with self.lock:
+            for future in self.pending.values():  # a cancelled fetch would leave its readers waiting
+                if not future.done():
+                    future.set_exception(OSError("closed"))
         self.upstream.close()
 
 
 class RangeCache(Blocks, Served):
     """A remote disc image, cached in blocks and served to libVLC at a loopback URL."""
 
-    def __init__(self, url, keep=512, ahead=14):
+    def __init__(self, url, keep=512, ahead=None):  # keep holds the whole read-ahead window
         super().__init__(url, keep, ahead)
         self._serve()
 
@@ -276,8 +365,6 @@ class RangeCache(Blocks, Served):
 
 
 def _endpoint(cache):
-    last = (cache.size - 1) // BLOCK
-
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -336,8 +423,7 @@ def _endpoint(cache):
                         continue
                     i, off = divmod(pos, BLOCK)
                     if i > first:  # reader is streaming, not probing: keep blocks in flight
-                        for j in range(i + 1, min(i + cache.ahead, last) + 1):
-                            cache.block(j)
+                        cache.prefetch(pos)
                     chunk = cache.block(i).result()[off:off + end - pos + 1]
                     self.wfile.write(chunk)
                     pos += len(chunk)
@@ -372,9 +458,12 @@ class LocalImage(Served):
 # A share request waits ~0.5-1.3 s before its first byte, then runs at ~5 MB/s, so small
 # blocks spend their connection waiting: 512 KiB gave 0.7 MB/s each, 2 MiB 1.4 and 8 MiB 3.
 SHARE_BLOCK = 4 << 20
-SHARE_AHEAD = 6  # blocks in flight per file: ~12 MB/s, past a UHD peak
-SHARE_CONNECTIONS = 24  # the most a share gave before it throttled; small disc files use them all
-SHARE_KEEP = 24  # blocks per file, so ~96 MiB on whichever stream is playing
+SHARE_AHEAD = 8  # read-ahead requests in flight per file, one per read-ahead connection
+# 24 connections is the most a share gave before it throttled. They are split three ways so a
+# reader never queues behind speculation: blocks a reader waits on, read-ahead, and the disc's
+# small files fetched in advance. A queued speculative fetch a reader then needs is promoted.
+SHARE_POOL = 8
+SHARE_KEEP = 48  # blocks per file, so ~192 MiB on whichever stream is playing: the window and behind
 
 
 class Share(Served):
@@ -385,9 +474,9 @@ class Share(Served):
     """
 
     def __init__(self, files):
-        self.pool = ThreadPoolExecutor(SHARE_CONNECTIONS)
+        self.pool, self.ahead, self.warm = (ThreadPoolExecutor(SHARE_POOL) for _ in range(3))
         hub = Upstream(next(iter(files.values()))[0])
-        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub))
+        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub), self.ahead)
                         for path, (link, size) in files.items()}
         self._serve()
 
@@ -395,15 +484,16 @@ class Share(Served):
         super().close()
         for stream in self.streams.values():
             stream.close()
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        for pool in (self.pool, self.ahead, self.warm):
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 class RemoteFile(io.RawIOBase):
     """One file on a share, read through its own block cache off the share's connection pool."""
 
-    def __init__(self, url, size, pool=None, upstream=None):
-        self.cache = Blocks(url, keep=SHARE_KEEP, ahead=SHARE_AHEAD, size=size, pool=pool, bs=SHARE_BLOCK,
-                            upstream=upstream)
+    def __init__(self, url, size, pool=None, upstream=None, background=None):
+        self.cache = Blocks(url, keep=SHARE_KEEP, size=size, pool=pool, bs=SHARE_BLOCK, upstream=upstream,
+                            background=background, streams=SHARE_AHEAD)
         self.size, self.pos = size, 0
 
     def readable(self):
@@ -419,8 +509,8 @@ class RemoteFile(io.RawIOBase):
         self.pos = (0 if whence == 0 else self.pos if whence == 1 else self.size) + offset
         return self.pos
 
-    def want(self, pos, size):
-        self.cache.want(pos, size)
+    def want(self, pos, size, pool=None):
+        self.cache.want(pos, size, pool)
 
     def pread(self, pos, size):
         size = min(size, self.size - pos)
@@ -573,6 +663,13 @@ def _share(url, disc_root):
     except Exception:
         image.close()
         raise
+    # A BD-J menu reads its few hundred small files one round trip at a time; have them on hand.
+    # Only those in the disc's folders: loose files beside them are a release's readme.
+    root = image.view.disc_root
+    prefix = root + "/" if root else ""
+    for path, fp in image.streams.items() if root is not None else ():
+        if fp.size <= SHARE_BLOCK and path.startswith(prefix) and "/" in path[len(prefix):]:
+            fp.want(0, fp.size, image.warm)
     return _streamed(image, image.view.kind)
 
 

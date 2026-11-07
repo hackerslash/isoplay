@@ -161,6 +161,26 @@ class ShareTests(unittest.TestCase):
         files = webdav.walk("http://me:pw@host/My Disc/", lambda url: body)
         self.assertEqual(files, {"a+b.m2ts": ("http://me:pw@host/My%20Disc/a%2Bb.m2ts", 42)})
 
+    def test_read_ahead_grows_with_sequential_reading_not_with_a_glance(self):
+        class Upstream:
+            throttled = closed = False
+
+            def get(self, start, end):
+                return media._Body(206, {}, bytes(end - start + 1))
+
+            def close(self):
+                pass
+
+        mib = 1 << 20
+        blocks = media.Blocks("http://host/f", size=1 << 30, upstream=Upstream(), bs=mib, streams=64)
+        self.addCleanup(blocks.close)
+        blocks.prefetch(500 * mib)  # a glance at one spot
+        self.assertLessEqual(max(set(blocks.pending) | set(blocks.blocks)), 500 + 1 + blocks.run)
+        for i in range(64):  # playback reading straight through
+            blocks.prefetch(i * mib)
+            blocks.read(i * mib, mib)
+        self.assertGreaterEqual(max(set(blocks.pending) | set(blocks.blocks) - {500}), 63 + blocks.ahead // 2)
+
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
             webdav.walk("http://127.0.0.1:1/", lambda url: b"<html><br></html>")  # invalid XML

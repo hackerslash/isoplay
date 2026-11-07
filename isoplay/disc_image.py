@@ -12,6 +12,7 @@ import re
 import struct
 import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pycdlib
 
@@ -165,7 +166,8 @@ class _ExtentFile(io.RawIOBase):
             offset, length = self.parts[i]
             within = pos - self.starts[i]
             count = min(size, length - within)
-            if count >= 1 << 20 and hasattr(self.cache, "prefetch"):
+            # A read of a whole block is playback streaming through, not a probe: keep blocks in flight.
+            if hasattr(self.cache, "prefetch") and count >= getattr(self.cache, "bs", 1 << 20):
                 self.cache.prefetch(offset + within)
             data = self.cache.read(offset + within, count)
             if len(data) != count:
@@ -367,17 +369,37 @@ def _build_udf(streams, directories, discs, root, kind):
 DVD_EXT = (".IFO", ".BUP", ".VOB")
 
 
-def _stored_spans(cache, archive):
-    """(offset, length) of each uncompressed entry's payload, from its local header."""
+HEADER_SPAN = 1 << 20  # headers this close share one read; small disc files sit together
+
+
+def _stored(info):
+    return not info.is_dir() and info.compress_type == zipfile.ZIP_STORED and not info.flag_bits & 0x1
+
+
+def _stored_spans(cache, infos):
+    """(offset, length) of each uncompressed entry's payload, from its local header.
+
+    Each read is a round trip on a link, so headers within a block of each other are fetched
+    as one range, the ranges in parallel, and with `peek` without the cache block around them.
+    """
+    infos = sorted((info for info in infos if _stored(info)), key=lambda info: info.header_offset)
+    groups = []
+    for info in infos:
+        if groups and info.header_offset + 30 - groups[-1][0] <= HEADER_SPAN:
+            groups[-1][1].append(info)
+        else:
+            groups.append((info.header_offset, [info]))
+    peek = getattr(cache, "peek", cache.read)
     spans = {}
-    for info in archive.infolist():
-        if info.is_dir() or info.compress_type != zipfile.ZIP_STORED or info.flag_bits & 0x1:
-            continue
-        head = cache.read(info.header_offset, 30)
-        if head[:4] != b"PK\x03\x04":
-            continue
-        name_len, extra_len = struct.unpack("<HH", head[26:30])
-        spans[info.filename] = (info.header_offset + 30 + name_len + extra_len, info.file_size)
+    with ThreadPoolExecutor(6) as pool:  # CDNs answer 429 well before 16 at once
+        reads = pool.map(lambda g: peek(g[0], g[1][-1].header_offset + 30 - g[0]), groups)
+        for (start, group), data in zip(groups, reads):
+            for info in group:
+                head = data[info.header_offset - start:info.header_offset - start + 30]
+                if head[:4] != b"PK\x03\x04":
+                    continue
+                name_len, extra_len = struct.unpack("<HH", head[26:30])
+                spans[info.filename] = (info.header_offset + 30 + name_len + extra_len, info.file_size)
     return spans
 
 
@@ -441,10 +463,11 @@ def project_zip(cache, root=None):
     A zip holding no navigable disc falls back to its main title, served as itself.
     """
     with zipfile.ZipFile(CacheFile(cache)) as archive:
-        spans = _stored_spans(cache, archive)
-        names = archive.namelist()
+        infos = {info.filename: info for info in archive.infolist()}
+    names = list(infos)
     found = _zip_discs(names)
     if not found:
+        spans = _stored_spans(cache, infos.values())
         inside = {name: [span] for name, span in spans.items()}
         view = _nested_image(cache, inside) or _title_view(cache, inside)
         if view:
@@ -454,9 +477,11 @@ def project_zip(cache, root=None):
         raise OSError("No playable media in that zip")
     discs = tuple(sorted(found))
     if root is None:
-        root = max(discs, key=lambda d: sum(spans.get(n, (0, 0))[1] for n in found[d][1].values()))
+        root = max(discs, key=lambda d: sum(infos[n].file_size for n in found[d][1].values()
+                                            if _stored(infos[n])))
     elif root not in found:
         raise ValueError("The selected disc folder is not in this image")
+    spans = _stored_spans(cache, [infos[n] for n in found[root][1].values()])  # only the disc being opened
     if any(name not in spans for name in found[root][1].values()):
         raise OSError("That zip is compressed, so the disc can't be streamed. Extract it first")
     return _assemble(found, root, discs, lambda name: _ExtentFile(cache, [spans[name]]))

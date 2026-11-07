@@ -4,6 +4,7 @@ Only PROPFIND is used, one `Depth: 1` level at a time: `Depth: infinity` is refu
 by most servers. Nothing here knows how to make a request; the caller passes that in.
 """
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from xml.etree import ElementTree
 
 DAV = "{DAV:}"
@@ -38,24 +39,31 @@ def walk(root, propfind):
     """{path below root: (url, size)} for every file on the share."""
     root = root if root.endswith("/") else root + "/"
     base = urllib.parse.unquote(urllib.parse.urlsplit(root).path)
-    files, todo = {}, [root]
-    while todo:
-        url = todo.pop()
-        listed = children(propfind(url), url)
-        if url == root and not listed:
-            raise OSError("That link isn't a WebDAV share")
-        for child, size in listed:
-            # Servers differ from the link in what they percent-encode, so compare decoded.
-            path = urllib.parse.unquote(urllib.parse.urlsplit(child).path)
-            if path.rstrip("/") == urllib.parse.unquote(urllib.parse.urlsplit(url).path).rstrip("/"):
-                continue  # a collection lists itself first
-            if not path.startswith(base):
-                continue
-            if size is None:
-                if child.count("/") - root.count("/") < MAX_DEPTH:
-                    todo.append(child if child.endswith("/") else child + "/")
-                continue
-            files[path[len(base):]] = (child, size)
-            if len(files) > MAX_FILES:
-                raise OSError("That share has too many files to open as a disc")
+    files, level = {}, [root]
+    with ThreadPoolExecutor(6) as pool:  # each listing is a round trip; a disc has a few dozen folders
+        while level:
+            todo, listings = [], [children(body, url) for url, body in zip(level, pool.map(propfind, level))]
+            for url, listed in zip(level, listings):
+                if url == root and not listed:
+                    raise OSError("That link isn't a WebDAV share")
+                _collect(root, base, url, listed, files, todo)
+            level = todo
     return files
+
+
+def _collect(root, base, url, listed, files, todo):
+    """Sort one listing into files and the folders still to list."""
+    for child, size in listed:
+        # Servers differ from the link in what they percent-encode, so compare decoded.
+        path = urllib.parse.unquote(urllib.parse.urlsplit(child).path)
+        if path.rstrip("/") == urllib.parse.unquote(urllib.parse.urlsplit(url).path).rstrip("/"):
+            continue  # a collection lists itself first
+        if not path.startswith(base):
+            continue
+        if size is None:
+            if child.count("/") - root.count("/") < MAX_DEPTH:
+                todo.append(child if child.endswith("/") else child + "/")
+            continue
+        files[path[len(base):]] = (child, size)
+        if len(files) > MAX_FILES:
+            raise OSError("That share has too many files to open as a disc")
