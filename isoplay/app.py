@@ -844,7 +844,8 @@ class Player(QMainWindow):
 
 
 def check():
-    """Bundle smoke test for CI: libVLC loads, and the BD-J jar and JVM are where libbluray looks.
+    """Bundle smoke test for CI: libVLC loads, the BD-J jar and JVM are where libbluray looks, and,
+    asked by the build, the pruned Qt still draws the window.
     Exit code only on Windows: a windowed exe has no stdout, and an uncaught error opens a dialog."""
     say = print if sys.stdout else (lambda *a: None)
     try:
@@ -855,6 +856,11 @@ def check():
             jvm = {"darwin": "lib/server/libjvm.dylib", "win32": "bin/server/jvm.dll"}.get(sys.platform, "lib/server/libjvm.so")
             assert (BASE / "jre" / jvm).is_file(), "bundled JRE missing"
             say("jar", os.environ["LIBBLURAY_CP"])
+        if os.environ.get("ISOPLAY_CHECK_QT"):  # the build's check, not the updater's: build.py prunes Qt
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
+            app = QApplication.instance() or QApplication([])
+            Player().close()  # every widget, icon and image the start screen draws
+            say("qt", app.platformName())
     except Exception as e:
         say("check failed:", e)
         os._exit(1)

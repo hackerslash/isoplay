@@ -7,6 +7,7 @@ and on Linux the distro VLC packages (see .github/workflows/build.yml).
 import os
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,10 @@ LUCIDA = {"LucidaSansRegular": "DejaVuSans", "LucidaSansDemiBold": "DejaVuSans-B
           "LucidaTypewriterRegular": "DejaVuSansMono", "LucidaTypewriterBold": "DejaVuSansMono-Bold",
           "LucidaTypewriterOblique": "DejaVuSansMono-Oblique",
           "LucidaTypewriterBoldOblique": "DejaVuSansMono-BoldOblique"}
+# Qt the player never loads, pulled in only because the PDF image plugin and the virtual keyboard
+# input plugin depend on them: QtPdf, QtQuick, QtQml and the keyboard, ~20 MB. Same names everywhere,
+# give or take a lib prefix, a 6 and a framework.
+QT_UNUSED = re.compile(r"(?i)^(lib)?qt6?(pdf|quick|qml|virtualkeyboard)|^(lib)?q(pdf|tvirtualkeyboardplugin)\.")
 
 # Libraries every Linux desktop already has, or that must match the host (GPU/audio/glibc).
 LINUX_SKIP = ("linux-vdso", "ld-linux", "libc.so", "libm.so", "libdl.so", "libpthread", "librt.so",
@@ -128,6 +133,24 @@ def jre():
             (fonts / f"{lucida}.ttf").write_bytes(tar.extractfile(ttf[dejavu]).read())
 
 
+def check(exe):
+    print("+", exe, "--check", flush=True)
+    subprocess.run([exe, "--check"], check=True, env={**os.environ, "ISOPLAY_CHECK_QT": "1"})
+
+
+def prune_qt(root):
+    """Delete QT_UNUSED from the frozen app, links and all, before anything is signed."""
+    removed = 0
+    for path in [p for p in root.rglob("*") if QT_UNUSED.match(p.name)]:
+        if path.is_symlink() or path.is_file():
+            removed += 0 if path.is_symlink() else path.stat().st_size
+            path.unlink()
+        elif path.is_dir():
+            removed += sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
+            shutil.rmtree(path)
+    print(f"pruned {removed >> 20} MiB of unused Qt", flush=True)
+
+
 def icon_png():
     """Render assets/icon.svg to a 1024 px PNG; PyInstaller turns it into .icns/.ico via Pillow."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -164,6 +187,7 @@ def main():
         internal = app / "Contents/Frameworks"
     else:
         internal = DIST / "isoplay/_internal"
+    prune_qt(app / "Contents" if sys.platform == "darwin" else internal)
     for name, src in (("vlc", STAGE), ("jre", BUILD / "jre")):
         if sys.platform == "darwin":  # codesign only accepts code in Frameworks; data lives in Resources
             shutil.copytree(src, app / "Contents/Resources" / name, symlinks=True)
@@ -179,14 +203,14 @@ def main():
             if f.is_file() and not f.is_symlink() and f.open("rb").read(4) in macho:
                 subprocess.run(["codesign", "--force", "--sign", "-", f], check=True, capture_output=True)
         run("codesign", "--force", "--sign", "-", app)
-        run(app / "Contents/MacOS/isoplay", "--check")
+        check(app / "Contents/MacOS/isoplay")
         run("ditto", "-c", "-k", "--keepParent", app, DIST / f"isoplay-{tag}.zip")
     elif sys.platform == "win32":
-        run(DIST / "isoplay/isoplay.exe", "--check")
+        check(DIST / "isoplay/isoplay.exe")
         shutil.make_archive(str(DIST / f"isoplay-{tag}"), "zip", DIST, "isoplay")
     else:
         linux_deps(internal)
-        run(DIST / "isoplay/isoplay", "--check")
+        check(DIST / "isoplay/isoplay")
         with tarfile.open(DIST / f"isoplay-{tag}.tar.gz", "w:gz") as t:
             t.add(DIST / "isoplay", "isoplay")
     print("built", *DIST.glob("isoplay-*"))
