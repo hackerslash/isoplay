@@ -20,10 +20,10 @@ from isoplay import updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
 from isoplay.media import UA, display_name, fmt, is_url, prepare  # noqa: E402
 from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
-from isoplay.theme import CSS, INK, INK2, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
+from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
 from isoplay.widgets import (  # noqa: E402
-    DiscChooser, ElidedLabel, OptionsMenu, Overlay, RecentRow, Spinner, disc_label,
+    DiscChooser, ElidedLabel, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
 )
 
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
@@ -99,13 +99,15 @@ class Player(QMainWindow):
         row = QHBoxLayout(bubble)
         row.setContentsMargins(12, 0, 14, 0)
         row.setSpacing(8)
-        self.spinner = Spinner()
         self.osd_label = QLabel(styleSheet="background: transparent; border: none;")
-        row.addWidget(self.spinner)
         row.addWidget(self.osd_label)
         QVBoxLayout(self.osd).setContentsMargins(0, 0, 0, 0)
         self.osd.layout().addWidget(bubble)
-        self.osd_until = 0.0
+        self.waiting = Overlay(self, clickable=False)
+        self.loader = Loader()
+        QVBoxLayout(self.waiting).setContentsMargins(0, 0, 0, 0)
+        self.waiting.layout().addWidget(self.loader)
+        self.osd_until = self.busy_until = 0.0
         self.buffering = False
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
@@ -179,10 +181,10 @@ class Player(QMainWindow):
         head.addWidget(logo)
         head.addLayout(names)
         head.addStretch()
-        options = QToolButton(objectName="link", text="Options", cursor=Qt.PointingHandCursor)
-        options.setIcon(svg_icon("more", 28, INK2))
-        options.setIconSize(QSize(14, 14))
-        options.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        options = QToolButton(objectName="link", cursor=Qt.PointingHandCursor)
+        options.setIcon(svg_icon("settings", 44, ICON))
+        options.setIconSize(QSize(19, 19))
+        options.setAccessibleName("Options")
         options.setToolTip("Playback and update preferences")
         options.setPopupMode(QToolButton.InstantPopup)
         preferences = OptionsMenu(options, self.act_menus, self.act_auto_updates, self.act_updates)
@@ -195,7 +197,7 @@ class Player(QMainWindow):
         acts.setSpacing(10)
         for icon, text, key, slot in (("folder", "Open File…", f"{MOD}O", self.browse),
                                       ("link", "Open Location…", f"{MOD}L", self.ask_url)):
-            b = QPushButton(objectName="action", cursor=Qt.PointingHandCursor, icon=svg_icon(icon, 36, "#9e9ea6"),
+            b = QPushButton(objectName="action", cursor=Qt.PointingHandCursor, icon=svg_icon(icon, 36, ICON),
                             iconSize=QSize(16, 16), clicked=slot)
             row = QHBoxLayout(b)
             row.setContentsMargins(38, 0, 12, 0)
@@ -389,7 +391,7 @@ class Player(QMainWindow):
         self.setWindowTitle("isoplay")
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
-        self.osd_until = 0
+        self.osd_until = self.busy_until = 0
 
     def play(self, src, menus=None, disc_root=None):
         if not src:
@@ -427,7 +429,7 @@ class Player(QMainWindow):
             self.pending_disc = (token, result)
             self.chooser.set_discs(self.proxy.view.discs)
             self.stack.setCurrentWidget(self.chooser)
-            self.osd_until = 0
+            self.osd_until = self.busy_until = 0
             return
         self.remember(self.current, self.disc)
         media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
@@ -459,8 +461,9 @@ class Player(QMainWindow):
         if name.startswith("buffer:"):
             pct = int(name[7:])
             started = self.mp.get_time() > 0
-            if pct < 100 and started and (self.buffering or self.osd_until < time.monotonic()):
-                self.flash(f"Buffering {pct}%", sticky=True, busy=True)
+            idle = max(self.osd_until, self.busy_until) < time.monotonic()
+            if pct < 100 and started and (self.buffering or idle):
+                self.flash("Buffering", sticky=True, busy=True, percent=pct)
                 self.buffering = True
             elif pct >= 100 and self.buffering:
                 self.flash("")
@@ -549,15 +552,20 @@ class Player(QMainWindow):
 
     # --- overlay -----------------------------------------------------------------------------------
 
-    def flash(self, text, seconds=3.0, sticky=False, busy=False):
+    def flash(self, text, seconds=3.0, sticky=False, busy=False, percent=None):
+        """Busy states take the centre ring; everything else is a corner toast."""
         self.buffering = False
         if not text:
-            self.osd_until = 0
+            self.osd_until = self.busy_until = 0
             return
-        self.spinner.setVisible(busy)
-        self.osd_label.setText(text)
-        self.osd.adjustSize()
-        self.osd_until = float("inf") if sticky else time.monotonic() + seconds
+        if busy:
+            self.loader.show_wait(text, percent)
+            self.waiting.adjustSize()
+            self.osd_until, self.busy_until = 0, float("inf") if sticky else time.monotonic() + seconds
+        else:
+            self.osd_label.setText(text)
+            self.osd.adjustSize()
+            self.busy_until, self.osd_until = 0, float("inf") if sticky else time.monotonic() + seconds
         self.place()
 
     def place(self):
@@ -566,10 +574,12 @@ class Player(QMainWindow):
         self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 22 - 84, w, 84)
         self.back.setGeometry(area.left() + 18, area.top() + 18, BADGE, BADGE)
         self.osd.move(area.left() + 18 + BADGE + 10, area.top() + 18)
+        self.waiting.move(area.center().x() - self.waiting.width() // 2,
+                          area.center().y() - self.waiting.height() // 2)
 
     def tick(self):
         if self.stack.currentWidget() is not self.video and not any(
-                overlay.shown for overlay in (self.controls, self.back, self.osd)):
+                overlay.shown for overlay in (self.controls, self.back, self.osd, self.waiting)):
             return
         now = time.monotonic()
         pos = QCursor.pos()
@@ -585,6 +595,7 @@ class Player(QMainWindow):
         self.controls.fade(show)
         self.back.fade(show)
         self.osd.fade(active and on_video and now < self.osd_until)
+        self.waiting.fade(active and on_video and now < self.busy_until)
         hide_cursor = on_video and active and playing and not show and self.frameGeometry().contains(pos)
         if hide_cursor != self.cursor_hidden:
             self.cursor_hidden = hide_cursor

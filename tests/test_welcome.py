@@ -97,7 +97,7 @@ class WelcomeLayoutTests(unittest.TestCase):
             page.show()
             self.app.processEvents()
             options = page.findChild(QToolButton)
-            self.assertEqual(options.text(), "Options")
+            self.assertEqual(options.accessibleName(), "Options")
             actions = options.menu().actions()
             rows = options.menu().findChildren(PreferenceRow)
             self.assertEqual(len(rows), 2)

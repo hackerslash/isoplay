@@ -1,8 +1,10 @@
 """Widgets the player is assembled from."""
+import time
+
 from PySide6.QtCore import (
-    QEasingCurve, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal,
+    QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
     QWidgetAction,
@@ -43,33 +45,72 @@ class Overlay(QWidget):
         self.anim.start()
 
 
-class Spinner(QWidget):
-    """Indeterminate ring: a 270 degree arc turning once a second."""
+class Bars(QWidget):
+    """Radial bars with a highlight travelling smoothly around them."""
 
-    def __init__(self, parent=None, size=14):
-        super().__init__(parent, fixedSize=QSize(size, size))
-        self.angle = 0
-        self.spin = QTimer(self, interval=16, timeout=self.turn)
+    COUNT = 12
+    TURNS = 1.1  # revolutions a second
 
-    def turn(self):
-        self.angle = (self.angle + 6) % 360
-        self.update()
+    def __init__(self, size=76, weight=4):
+        super().__init__(fixedSize=QSize(size, size))
+        self.weight, self.percent = weight, None
+        self.started = time.monotonic()
+        self.spin = QTimer(self, interval=16, timeout=self.update)
 
-    def showEvent(self, e):
+    def showEvent(self, event):
+        self.started = time.monotonic()
         self.spin.start()
 
-    def hideEvent(self, e):
+    def hideEvent(self, event):
         self.spin.stop()
 
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect().adjusted(2, 2, -2, -2)
-        for color, start, span in ((QColor(255, 255, 255, 46), 0, 360), (QColor(INK), -self.angle, 270)):
-            pen = QPen(color, 2)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        outer = self.width() / 2 - self.weight / 2
+        inner = outer * 0.58
+        head = (time.monotonic() - self.started) * self.TURNS * 360
+        painter.save()
+        painter.translate(QRectF(self.rect()).center())
+        for i in range(self.COUNT):
+            angle = i * 360 / self.COUNT
+            lit = (1 - ((angle - head) % 360) / 360) ** 2.4
+            pen = QPen(QColor(245, 245, 247, round(30 + 225 * lit)), self.weight)
             pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawArc(r, start * 16, span * 16)
+            painter.setPen(pen)
+            painter.save()
+            painter.rotate(angle)
+            painter.drawLine(QPointF(0, -inner - (outer - inner) * 0.12 * lit), QPointF(0, -outer))
+            painter.restore()
+        painter.restore()
+        if self.percent is None:
+            return
+        font = painter.font()
+        font.setPixelSize(round(self.height() * 0.24))
+        font.setWeight(QFont.DemiBold)
+        painter.setFont(font)
+        painter.setPen(QColor(INK))
+        painter.drawText(self.rect(), Qt.AlignCenter, f"{self.percent}%")
+
+
+class Loader(QWidget):
+    """Centred wait indicator, painted straight onto the video."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, objectName="loader")
+        self.bars = Bars()
+        self.caption = QLabel(objectName="loaderCaption", alignment=Qt.AlignHCenter)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(14)
+        column.addWidget(self.bars, alignment=Qt.AlignHCenter)
+        column.addWidget(self.caption)
+
+    def show_wait(self, text, percent=None):
+        self.caption.setText(text)
+        self.bars.percent = percent
+        self.bars.update()
+        self.adjustSize()
 
 
 class ElidedLabel(QLabel):

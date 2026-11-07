@@ -12,6 +12,7 @@ MAC = sys.platform == "darwin"
 MOD = "⌘" if MAC else "Ctrl+"
 
 INK, INK2, INK3 = "#f5f5f7", "rgba(235,235,245,0.62)", "rgba(235,235,245,0.38)"
+ICON = "#9e9ea6"  # SVG has no rgba(), so icons need a flat colour, not INK2/INK3
 CSS = f"""
 * {{ outline: none; }}
 QMainWindow {{ background: #000; }}
@@ -53,6 +54,7 @@ QSlider::handle:horizontal {{ width: 11px; height: 11px; margin: -4px 0; border-
 #back:pressed {{ background: rgba(68,68,72,0.95); }}
 #osd {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 9px; }}
 #osd QLabel {{ color: {INK}; font-size: 13px; font-weight: 500; }}
+#loaderCaption {{ color: {INK}; font-size: 13px; font-weight: 500; background: transparent; }}
 QToolTip {{ color: {INK}; background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12); padding: 3px 6px; }}
 """
 MENU_CSS = f"""
@@ -97,7 +99,13 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
     "folder": "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z",
     "link": "M3.9 12A3.1 3.1 0 0 1 7 8.9h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM8 13h8v-2H8v2z"
             "m9-6h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10z",
-    "more": "M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
+    "settings": "M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32"
+                "a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84"
+                "c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87"
+                "a.49.49 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61"
+                "l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84"
+                "c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32"
+                "c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
     "back": "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
 }
 
