@@ -81,7 +81,7 @@ class Upstream:
         # Files on one share reuse each other's connections: one per thread per file ran to hundreds.
         self.local, self.lock, self.connections = ((share.local, share.lock, share.connections) if share
                                                    else (threading.local(), threading.Lock(), []))
-        self.throttled = self.closed = False
+        self.throttles, self.closed = 0, False
 
     def _connection(self):
         url = self.url
@@ -144,7 +144,7 @@ class Upstream:
                 self._drop()
             if response.status == 429 and attempt < 2:  # a CDN throttling a burst; it clears in seconds
                 trace(f"upstream {start}-{end} throttled (429), retrying")
-                self.throttled = True
+                self.throttles += 1
                 wait = response.getheader("Retry-After", "")
                 time.sleep(min(int(wait), 10) if wait.isdigit() else 2 ** attempt)
                 continue
@@ -209,8 +209,12 @@ class Blocks:
     # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
 
     def __init__(self, url, keep=512, ahead=None, size=None, pool=None, bs=None, upstream=None, background=None,
-                 streams=6):
+                 streams=10):
         self.url, self.keep, self.bs, self.streams = url, keep, bs or BLOCK, streams
+        # Read-ahead requests in flight, found as TCP finds a window: one more per round while there
+        # is more to fetch than requests to fetch it, halved when the host throttles or fails.
+        # Hosts differ wildly: one CDN refused a dozen connections, a share happily took 24.
+        self.limit, self.starved = float(min(3, streams)), False
         self.ahead = AHEAD // self.bs if ahead is None else ahead  # in blocks
         self.run = max(1, RUN // self.bs)
         self.upstream = upstream or Upstream(url)
@@ -218,12 +222,18 @@ class Blocks:
         self.streak = [-2, -2]  # first and last block of the reader's current in-order run
         self.warming = {}  # block -> (job, first, futures) still queued on a background pool
         self.background = background  # where read-ahead queues, if not behind readers in `pool`
-        self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(self._streams() + 2), True)
+        self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(streams + 2), True)
         self.size = self._size() if size is None else size  # a share already knows it
 
     def _streams(self):
-        """Read-ahead requests to hold open at once: halved for good once the host throttles."""
-        return max(1, self.streams // 2) if self.upstream.throttled else self.streams
+        return int(self.limit)
+
+    def _adapt(self, ok):
+        with self.lock:
+            if not ok:
+                self.limit = max(1.0, self.limit / 2)
+            elif self.starved:
+                self.limit, self.starved = min(float(self.streams), self.limit + 1 / self.limit), False
 
     def _get(self, start, end):
         return self.upstream.get(start, end)
@@ -238,6 +248,7 @@ class Blocks:
     def _fetch(self, first, futures):
         start = first * self.bs
         end = min((first + len(futures)) * self.bs, self.size) - 1
+        throttles, ok = self.upstream.throttles, True
         try:
             for attempt in range(3):
                 try:
@@ -246,10 +257,12 @@ class Blocks:
                     if len(data) == end - start + 1:
                         break
                 except OSError:
+                    ok = False
                     if attempt == 2:
                         raise
             else:
                 raise OSError(f"short read at block {first}")
+            self._adapt(ok and self.upstream.throttles == throttles)
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             with self.lock:
                 for k, part in enumerate(parts):
@@ -259,6 +272,7 @@ class Blocks:
             for future, part in zip(futures, parts):
                 future.set_result(part)
         except BaseException as e:
+            self._adapt(False)
             for future in futures:
                 if not future.done():
                     future.set_exception(e)
@@ -298,6 +312,7 @@ class Blocks:
                     i += 1
                     continue
                 if limit is not None and self.requests >= limit:
+                    self.starved = True
                     return
                 j = i + 1
                 while j < min(last, i + self.run) and j not in self.blocks and j not in self.pending:

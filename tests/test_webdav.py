@@ -164,7 +164,7 @@ class ShareTests(unittest.TestCase):
 
     def test_read_ahead_grows_with_sequential_reading_not_with_a_glance(self):
         class Upstream:
-            throttled = closed = False
+            throttles, closed = 0, False
 
             def get(self, start, end):
                 return media._Body(206, {}, bytes(end - start + 1))
@@ -218,6 +218,68 @@ class ShareTests(unittest.TestCase):
         reader.join(5)
         self.assertLess(time.monotonic() - started, 2)
         self.assertIsInstance(outcome[0], OSError)
+
+    def test_a_throttling_host_is_retried_and_counted(self):
+        answers = [429, 206]
+
+        class Throttling(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                status = answers.pop(0)
+                self.send_response(status)
+                if status == 429:
+                    self.send_header("Retry-After", "0")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_header("Content-Range", "bytes 0-3/4")
+                self.send_header("Content-Length", "4")
+                self.end_headers()
+                self.wfile.write(b"data")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Throttling)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = media.Upstream(f"http://127.0.0.1:{server.server_port}/f")
+        self.addCleanup(upstream.close)
+        with upstream.get(0, 3) as r:
+            self.assertEqual(r.read(), b"data")
+        self.assertEqual(upstream.throttles, 1)
+
+    def test_a_closed_stream_stops_without_touching_the_network(self):
+        upstream = media.Upstream("http://127.0.0.1:1/f")  # nothing listens here
+        upstream.close()
+        with self.assertRaisesRegex(OSError, "closed"):
+            upstream.get(0, 99)
+
+    def test_read_ahead_connections_grow_while_needed_and_halve_when_throttled(self):
+        class Upstream:
+            throttles, closed = 0, False
+
+            def get(self, start, end):
+                return media._Body(206, {}, bytes(end - start + 1))
+
+            def close(self):
+                pass
+
+        blocks = media.Blocks("http://host/f", size=1 << 30, upstream=Upstream(), bs=1 << 20, streams=10)
+        self.addCleanup(blocks.close)
+        start = blocks._streams()
+        for _ in range(200):  # more to fetch than connections, and every fetch succeeds
+            blocks.starved = True
+            blocks._adapt(True)
+        self.assertEqual(blocks._streams(), 10)
+        blocks._adapt(False)
+        self.assertEqual(blocks._streams(), 5)
+        for _ in range(200):  # succeeding with nothing waiting adds nothing
+            blocks._adapt(True)
+        self.assertEqual(blocks._streams(), 5)
+        self.assertLess(start, 10)
 
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
