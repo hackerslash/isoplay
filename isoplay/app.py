@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from isoplay import updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
-from isoplay.media import UA, display_name, fmt, is_url, prepare  # noqa: E402
+from isoplay.media import UA, display_name, fmt, is_url, normalize, prepare  # noqa: E402
 from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
@@ -28,6 +28,7 @@ from isoplay.widgets import (  # noqa: E402
 
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
 BADGE = 36  # shared height of the back control and the status bubble beside it
+STALL = 45  # seconds of a black screen before an open is called a failure
 
 
 class Bridge(QObject):
@@ -54,7 +55,7 @@ class Player(QMainWindow):
         self.mp.video_set_key_input(False)
         self.mp.video_set_mouse_input(True)
         self.disc = self.proxy = self.current = None
-        self.disc_root = None
+        self.disc_root, self.discs = None, ()
         self.ask_disc = False
         self.pending_disc = None
         self.token = 0
@@ -109,6 +110,7 @@ class Player(QMainWindow):
         self.waiting.layout().addWidget(self.loader)
         self.osd_until = self.busy_until = 0.0
         self.buffering = False
+        self.deadline = 0.0
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -206,6 +208,8 @@ class Player(QMainWindow):
             row.addWidget(QLabel(key, objectName="muted", styleSheet="background:transparent;"))
             acts.addWidget(b)
         col.addLayout(acts)
+        self.problem = QLabel(objectName="problem", wordWrap=True, visible=False)
+        col.addWidget(self.problem)
         col.addSpacing(24)
 
         top = QHBoxLayout()
@@ -385,19 +389,20 @@ class Player(QMainWindow):
             self.proxy.close()
             self.proxy = None
         self.current = self.disc = None
-        self.disc_root = None
+        self.disc_root, self.discs = None, ()
         self.ask_disc = False
         self.pending_disc = None
         self.setWindowTitle("isoplay")
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
-        self.osd_until = self.busy_until = 0
+        self.osd_until = self.busy_until = self.deadline = 0
 
     def play(self, src, menus=None, disc_root=None):
         if not src:
             return
         self.close_video()
-        self.current = src
+        self.problem.setVisible(False)
+        self.current = src = normalize(src)
         self.ask_disc = disc_root is None
         self.use_menus = self.act_menus.isChecked() if menus is None else menus
         self.setWindowTitle(display_name(src))
@@ -420,18 +425,16 @@ class Player(QMainWindow):
                 result[2].close()
             return
         if isinstance(result, Exception):
-            self.flash(f"Couldn't open this. {result}", seconds=10)
+            self.fail(str(result) if isinstance(result, OSError) else "Couldn't open this")
             return
-        mrl, self.disc, self.proxy = result
-        self.disc_root = self.proxy.view.disc_root if self.proxy and self.proxy.view else None
-        if self.ask_disc and self.proxy and self.proxy.view and len(self.proxy.view.discs) > 1:
+        mrl, self.disc, self.proxy, self.discs, self.disc_root = result
+        if self.ask_disc and len(self.discs) > 1:
             self.ask_disc = False
             self.pending_disc = (token, result)
-            self.chooser.set_discs(self.proxy.view.discs)
+            self.chooser.set_discs(self.discs)
             self.stack.setCurrentWidget(self.chooser)
             self.osd_until = self.busy_until = 0
             return
-        self.remember(self.current, self.disc)
         media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
         media.add_option(f":http-user-agent={UA}")
         if self.disc == "dvd" and self.use_menus and not mrl.startswith("dvd:"):
@@ -440,6 +443,7 @@ class Player(QMainWindow):
             media.add_option(":no-bluray-menu")
         self.mp.set_media(media)
         self.mp.play()
+        self.deadline = time.monotonic() + STALL
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -460,6 +464,8 @@ class Player(QMainWindow):
     def on_event(self, name):
         if name.startswith("buffer:"):
             pct = int(name[7:])
+            if self.deadline:
+                self.deadline = time.monotonic() + STALL
             started = self.mp.get_time() > 0
             idle = max(self.osd_until, self.busy_until) < time.monotonic()
             if pct < 100 and started and (self.buffering or idle):
@@ -469,14 +475,16 @@ class Player(QMainWindow):
                 self.flash("")
         elif name == "vout":
             self.flash("")
-        elif name == "end" and not self.disc:
-            self.flash("Finished", seconds=3)
+        elif name == "end":
+            if self.deadline:  # reached the end without ever showing a frame
+                self.fail("This wouldn't play")
+            elif not self.disc:
+                self.flash("Finished", seconds=3)
         elif name == "error":
             if self.disc and self.use_menus:
-                self.flash("The disc menu didn't load. Choose Play Main Title Without Menus from the track button.", seconds=12)
+                self.flash("The disc menu didn't load. Try Play Main Title Without Menus", seconds=10)
             else:
-                self.flash("Couldn't play this. The link may have expired or the format isn't supported.",
-                           seconds=12)
+                self.fail("This wouldn't play")
 
     # --- transport ---------------------------------------------------------------------------------
 
@@ -539,11 +547,10 @@ class Player(QMainWindow):
         menu.deleteLater()  # parented to the window, so it would otherwise live until the app quits
 
     def add_disc_choices(self, menu):
-        view = self.proxy.view if self.proxy else None
-        if not view or len(view.discs) < 2:
+        if len(self.discs) < 2:
             return
         choices = menu.addMenu("Discs in This Image")
-        for root in view.discs:
+        for root in self.discs:
             label = disc_label(root)
             action = choices.addAction(label)
             action.setCheckable(True)
@@ -551,6 +558,12 @@ class Player(QMainWindow):
             action.triggered.connect(lambda _=False, selected=root: self.switch_disc(selected))
 
     # --- overlay -----------------------------------------------------------------------------------
+
+    def fail(self, message):
+        """Give up on this source: back to the start screen, with the reason on it."""
+        self.close_video()
+        self.problem.setText(message)
+        self.problem.setVisible(True)
 
     def flash(self, text, seconds=3.0, sticky=False, busy=False, percent=None):
         """Busy states take the centre ring; everything else is a corner toast."""
@@ -582,6 +595,13 @@ class Player(QMainWindow):
                 overlay.shown for overlay in (self.controls, self.back, self.osd, self.waiting)):
             return
         now = time.monotonic()
+        if self.deadline:
+            if self.mp.get_time() > 0:  # the first frame is what makes this worth remembering
+                self.deadline = 0
+                self.remember(self.current, self.disc)
+            elif now > self.deadline:
+                self.fail("Nothing played from this")
+                return
         pos = QCursor.pos()
         if pos != self.last_pos:
             self.last_pos = pos

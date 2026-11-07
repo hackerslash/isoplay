@@ -40,6 +40,8 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 #recentScroll QScrollBar::add-page:vertical, #recentScroll QScrollBar::sub-page:vertical {{ background: transparent; }}
 #empty {{ color: {INK3}; font-size: 13px; }}
 #panel {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; }}
+#problem {{ color: #ffb4ab; background: rgba(255,69,58,0.12); border: 1px solid #742925;
+    border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-top: 14px; }}
 #panel QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 4px; }}
 #panel QPushButton:hover {{ background: rgba(255,255,255,0.10); }}
 #panel QPushButton:pressed {{ background: rgba(255,255,255,0.16); }}
