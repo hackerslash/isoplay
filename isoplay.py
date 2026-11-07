@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -48,7 +49,7 @@ import time  # noqa: E402
 
 import vlc  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
-    QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSettings, QSize, Qt, QTimer, Signal,
+    QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRect, QRectF, QSettings, QSize, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import (  # noqa: E402
     QAction, QColor, QCursor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap,
@@ -57,6 +58,7 @@ from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
+    QWidgetAction,
 )
 from update_ui import UpdateUI  # noqa: E402
 
@@ -339,8 +341,8 @@ QMainWindow {{ background: #000; }}
 #action:pressed {{ background: rgba(255,255,255,0.14); }}
 #link {{ color: {INK3}; background: transparent; border: none; font-size: 12px; padding: 0; }}
 #link:hover {{ color: {INK}; }}
-QToolButton#link {{ padding: 4px 16px 4px 4px; }}
-QToolButton#link::menu-indicator {{ subcontrol-position: right center; right: 2px; }}
+QToolButton#link {{ padding: 4px 6px; }}
+QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 #row {{ background: transparent; border-radius: 7px; }}
 #row:hover {{ background: rgba(255,255,255,0.06); }}
 #rowtitle {{ color: {INK}; font-size: 13px; }}
@@ -377,6 +379,18 @@ QMenu::item:disabled {{ color: {INK3}; }}
 QMenu::separator {{ height: 1px; background: rgba(255,255,255,0.10); margin: 4px 6px; }}
 QMenu::indicator {{ width: 12px; left: 6px; }}
 """
+OPTIONS_CSS = f"""
+QMenu#optionsMenu {{ background: #242426; color: {INK}; border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px; padding: 6px; }}
+QMenu#optionsMenu::item {{ color: {INK}; padding: 10px 12px; border-radius: 6px; font-size: 13px; }}
+QMenu#optionsMenu::item:selected {{ background: rgba(255,255,255,0.08); }}
+QMenu#optionsMenu::item:disabled {{ color: {INK3}; }}
+QMenu#optionsMenu::indicator {{ width: 0; height: 0; }}
+QMenu#optionsMenu::separator {{ height: 1px; background: rgba(255,255,255,0.08); margin: 5px 8px; }}
+QPushButton#preferenceRow {{ background: transparent; border: none; border-radius: 6px; padding: 0; }}
+QPushButton#preferenceRow:hover, QPushButton#preferenceRow:focus {{ background: rgba(255,255,255,0.06); }}
+QLabel#preferenceLabel {{ color: {INK}; font-size: 13px; background: transparent; }}
+"""
 
 ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
     "play": "M8 5.14v13.72a1 1 0 0 0 1.52.85l10.9-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z",
@@ -400,6 +414,7 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
     "link": "M3.9 12A3.1 3.1 0 0 1 7 8.9h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM8 13h8v-2H8v2z"
             "m9-6h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10z",
     "check": "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
+    "more": "M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
 }
 
 
@@ -499,6 +514,103 @@ class ElidedLabel(QLabel):
         self.setText(self.fontMetrics().elidedText(self.full_text, self.mode, max(0, self.contentsRect().width())))
 
 
+class PreferenceSwitch(QWidget):  # native menu checkmarks cannot be styled, so draw the toggle
+    def __init__(self, action):
+        super().__init__()
+        self.action = action
+        self.setFixedSize(28, 16)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        action.toggled.connect(lambda _: self.update())
+
+    def paintEvent(self, event):
+        on = self.action.isChecked()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#0a84ff") if on else QColor(255, 255, 255, 42))
+        painter.drawRoundedRect(QRectF(self.rect()), 8, 8)
+        painter.setBrush(QColor(INK))
+        painter.drawEllipse(QRectF(14 if on else 2, 2, 12, 12))
+
+
+class PreferenceRow(QPushButton):
+    def __init__(self, action):
+        super().__init__(objectName="preferenceRow", cursor=Qt.PointingHandCursor)
+        self.setAccessibleName(action.text())
+        self.setAccessibleDescription("On" if action.isChecked() else "Off")
+        self.setFixedHeight(38)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 0, 12, 0)
+        row.setSpacing(18)
+        label = QLabel(action.text(), objectName="preferenceLabel")
+        label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        row.addWidget(label)
+        row.addStretch()
+        row.addWidget(PreferenceSwitch(action))
+        self.clicked.connect(action.trigger)
+        action.toggled.connect(lambda value: self.setAccessibleDescription("On" if value else "Off"))
+
+
+class OptionsMenu(QMenu):
+    def __init__(self, parent, disc_menus, automatic_updates, check_updates):
+        super().__init__(parent)
+        self.setObjectName("optionsMenu")
+        self.setMinimumWidth(330)
+        self.setStyleSheet(OPTIONS_CSS)
+        for action in (disc_menus, automatic_updates):
+            item = QWidgetAction(self)
+            item.setText(action.text())
+            item.setDefaultWidget(PreferenceRow(action))
+            item.triggered.connect(action.trigger)
+            self.addAction(item)
+        self.addSeparator()
+        self.addAction(check_updates)
+
+
+BADGES = {  # kind -> (accessible label, artwork; see assets/media-badges/README.md for sources)
+    "bluray": ("Blu-ray disc", "blu-ray.svg"),
+    "dvd": ("DVD disc", "dvd.svg"),
+    "video": ("Media file", "media-file.svg"),
+    "disc": ("Disc image", "disc-image.png"),  # PNG: QtSvg ignores the clip-path this artwork needs
+}
+
+
+@lru_cache
+def badge_art(art):
+    path = BASE / "assets/media-badges" / art
+    if path.suffix == ".png":
+        return QPixmap(str(path))
+    renderer = QSvgRenderer(str(path))
+    box = renderer.viewBoxF()
+    scale = 144 / max(box.width(), box.height())
+    img = QImage(round(box.width() * scale), round(box.height() * scale), QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    painter = QPainter(img)
+    renderer.render(painter)
+    painter.end()
+    return QPixmap.fromImage(img)
+
+
+class MediaBadge(QWidget):
+    def __init__(self, kind, source):
+        super().__init__(objectName="mediaBadge")
+        if kind not in BADGES:
+            kind = "disc" if suffix(source) in DISC_EXT else "video"
+        label, art = BADGES[kind]
+        self.art = badge_art(art)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self.setFixedSize(36, 36)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event):
+        target = QRect(QPoint(), self.art.size().scaled(self.size(), Qt.KeepAspectRatio))
+        target.moveCenter(self.rect().center())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(target, self.art)
+
+
 class RecentRow(QFrame):
     def __init__(self, item, on_open):
         super().__init__(objectName="row", cursor=Qt.PointingHandCursor)
@@ -510,12 +622,13 @@ class RecentRow(QFrame):
         lay.setHorizontalSpacing(12)
         lay.setVerticalSpacing(4)
         title = ElidedLabel(item["name"], mode=Qt.ElideMiddle, objectName="rowtitle")
-        meta = " · ".join(x for x in (KIND.get(item.get("kind")), origin(item["src"])) if x)
-        lay.addWidget(title, 0, 0)
-        lay.addWidget(ElidedLabel(meta, objectName="rowmeta"), 1, 0)
-        lay.addWidget(QLabel(ago(item["ts"]), objectName="rowmeta"), 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
-        lay.setColumnStretch(0, 1)
-        self.setToolTip(item["src"])
+        badge = MediaBadge(item.get("kind"), self.src)
+        lay.addWidget(badge, 0, 0, 2, 1)
+        lay.addWidget(title, 0, 1)
+        lay.addWidget(ElidedLabel(origin(self.src), objectName="rowmeta"), 1, 1)
+        lay.addWidget(QLabel(ago(item["ts"]), objectName="rowmeta"), 0, 2, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
+        lay.setColumnStretch(1, 1)
+        self.setToolTip(f"{badge.accessibleName()}\n{self.src}")
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
@@ -720,13 +833,12 @@ class Player(QMainWindow):
         head.addLayout(names)
         head.addStretch()
         options = QToolButton(objectName="link", text="Options", cursor=Qt.PointingHandCursor)
+        options.setIcon(svg_icon("more", 28, INK2))
+        options.setIconSize(QSize(14, 14))
+        options.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         options.setToolTip("Playback and update preferences")
         options.setPopupMode(QToolButton.InstantPopup)
-        preferences = QMenu(options)
-        preferences.addAction(self.act_menus)
-        preferences.addAction(self.act_auto_updates)
-        preferences.addSeparator()
-        preferences.addAction(self.act_updates)
+        preferences = OptionsMenu(options, self.act_menus, self.act_auto_updates, self.act_updates)
         options.setMenu(preferences)
         head.addWidget(options)
         col.addLayout(head)

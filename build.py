@@ -137,6 +137,7 @@ def main():
 
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "isoplay",
         "--icon", icon_png(), "--add-data", f"{ROOT / 'assets/icon.svg'}{os.pathsep}assets",
+        "--add-data", f"{ROOT / 'assets/media-badges'}{os.pathsep}assets/media-badges",
         "--collect-data", "certifi",
         "--osx-bundle-identifier", "io.github.hackerslash.isoplay",
         "--workpath", BUILD / "pyinstaller", "--distpath", DIST, ROOT / "isoplay.py")

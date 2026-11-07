@@ -20,6 +20,8 @@ if library.is_file():
         import ctypes
         ctypes.CDLL(str(library.parent / "libvlccore.so.9"), mode=ctypes.RTLD_GLOBAL)
 import isoplay
+from PySide6.QtGui import QRegion
+from PySide6.QtTest import QTest
 
 
 class WelcomeHarness:
@@ -91,8 +93,13 @@ class WelcomeLayoutTests(unittest.TestCase):
             options = page.findChild(isoplay.QToolButton)
             self.assertEqual(options.text(), "Options")
             actions = options.menu().actions()
-            self.assertIn(owner.act_menus, actions)
-            self.assertIn(owner.act_auto_updates, actions)
+            rows = options.menu().findChildren(isoplay.PreferenceRow)
+            self.assertEqual(len(rows), 2)
+            rows[0].click()
+            self.assertTrue(owner.act_menus.isChecked())
+            self.assertEqual(rows[0].accessibleDescription(), "On")
+            rows[1].click()
+            self.assertTrue(owner.act_auto_updates.isChecked())
             self.assertIn(owner.act_updates, actions)
             self.assertEqual(page.findChildren(isoplay.QCheckBox), [])
             for label in page.findChildren(isoplay.ElidedLabel):
@@ -102,6 +109,49 @@ class WelcomeLayoutTests(unittest.TestCase):
             self.assertTrue(title.text().endswith(".iso"))
         finally:
             page.close()
+
+    def test_recent_types_use_distinct_accessible_badges_not_metadata_text(self):
+        for kind, source, expected in (("bluray", "film.iso", "Blu-ray disc"),
+                                       ("dvd", "film.iso", "DVD disc"),
+                                       (None, "film.mkv", "Media file"),
+                                       (None, "film.iso", "Disc image")):
+            with self.subTest(kind=kind, source=source):
+                item = {"src": source, "name": "Film", "kind": kind, "ts": time.time()}
+                row = isoplay.RecentRow(item, Mock())
+                badge = row.findChild(isoplay.MediaBadge)
+                self.assertEqual(badge.accessibleName(), expected)
+                self.assertIn(expected, row.toolTip())
+                meta = row.findChild(isoplay.ElidedLabel, "rowmeta")
+                self.assertEqual(meta.full_text, isoplay.origin(source))
+                row.close()
+
+    def test_preference_rows_toggle_from_the_keyboard(self):
+        owner = WelcomeHarness()
+        menu = isoplay.OptionsMenu(None, owner.act_menus, owner.act_auto_updates, owner.act_updates)
+        menu.show()
+        self.app.processEvents()
+        QTest.keyClick(menu, isoplay.Qt.Key_Down)
+        QTest.keyClick(menu, isoplay.Qt.Key_Return)
+        self.assertTrue(owner.act_menus.isChecked(), "menu rows are not keyboard reachable")
+        menu.close()
+
+    def test_badges_fill_their_box_without_spilling_into_the_corners(self):
+        host = isoplay.QWidget()
+        for kind, source in (("bluray", "f.iso"), ("dvd", "f.iso"), (None, "f.mkv"), (None, "f.img")):
+            with self.subTest(kind=kind, source=source):
+                badge = isoplay.MediaBadge(kind, source)
+                badge.setParent(host)
+                box, name = badge.width(), badge.accessibleName()
+                shot = isoplay.QImage(badge.size(), isoplay.QImage.Format_ARGB32)
+                shot.fill(0)
+                badge.render(shot, isoplay.QPoint(), QRegion(), isoplay.QWidget.RenderFlag.DrawChildren)
+                painted = [x for y in range(box) for x in range(box) if shot.pixelColor(x, y).alpha() > 0]
+                self.assertTrue(painted, f"{name} painted nothing")
+                width = max(painted) - min(painted) + 1
+                self.assertGreaterEqual(width, 0.75 * box, f"{name} renders at {width}px in a {box}px badge")
+                for x, y in ((0, 0), (box - 1, 0), (0, box - 1), (box - 1, box - 1)):
+                    self.assertEqual(shot.pixelColor(x, y).alpha(), 0, f"{name} spills to ({x}, {y})")
+                badge.close()
 
     def test_empty_recent_list_stays_within_short_window(self):
         owner = WelcomeHarness()
