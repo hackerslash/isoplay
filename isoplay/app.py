@@ -308,9 +308,11 @@ class Player(QMainWindow):
 
     def recent(self):
         try:
-            return json.loads(self.settings.value("recent", "[]"))
+            items = json.loads(self.settings.value("recent", "[]"))
         except ValueError:
             return []
+        return [i for i in items if isinstance(i, dict) and isinstance(i.get("src"), str)
+                and isinstance(i.get("name"), str) and isinstance(i.get("ts"), (int, float))]
 
     def remember(self, src, kind):
         items = [i for i in self.recent() if i["src"] != src]
@@ -529,6 +531,7 @@ class Player(QMainWindow):
         menu.addSeparator()
         menu.addAction(self.act_updates)
         menu.exec(self.tracks_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)))
+        menu.deleteLater()  # parented to the window, so it would otherwise live until the app quits
 
     def add_disc_choices(self, menu):
         view = self.proxy.view if self.proxy else None
@@ -563,6 +566,9 @@ class Player(QMainWindow):
         self.osd.move(area.left() + 70, area.top() + 18)
 
     def tick(self):
+        if self.stack.currentWidget() is not self.video and not any(
+                overlay.shown for overlay in (self.controls, self.back, self.osd)):
+            return
         now = time.monotonic()
         pos = QCursor.pos()
         if pos != self.last_pos:
@@ -686,7 +692,7 @@ def check():
 def main():
     args = sys.argv[1:]
     result_file = None
-    if "--update-result" in args:
+    if "--update-result" in args and args.index("--update-result") + 1 < len(args):
         index = args.index("--update-result")
         result_file = args[index + 1]
         del args[index:index + 2]

@@ -130,6 +130,15 @@ class WelcomeLayoutTests(unittest.TestCase):
                 self.assertEqual(meta.full_text, origin(source))
                 row.close()
 
+    def test_malformed_recent_entries_are_ignored(self):
+        owner = WelcomeHarness()
+        owner.settings = QSettings("isoplay-tests", "recent")
+        owner.settings.setValue("recent", '[{"src": "/a.iso", "name": "A", "ts": 1}, "junk", {"src": "/b.iso"}, 7]')
+        self.addCleanup(owner.settings.clear)
+        self.assertEqual([i["src"] for i in Player.recent(owner)], ["/a.iso"])
+        owner.settings.setValue("recent", "not json")
+        self.assertEqual(Player.recent(owner), [])
+
     def test_back_overlay_leaves_the_video(self):
         class Owner(QWidget):
             close_video = Mock()

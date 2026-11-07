@@ -102,6 +102,7 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
 }
 
 
+@lru_cache
 def svg_icon(svg, size=48, color=INK):
     """Render SVG markup or an ICONS key to a QIcon (QSvgRenderer, so no image-format plugin needed)."""
     if svg in ICONS:

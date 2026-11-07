@@ -190,7 +190,7 @@ def project_iso9660(cache, root=None):
             for record in directory.children:
                 if record.is_dot() or record.is_dotdot() or record.is_symlink():
                     continue
-                name = record.file_identifier().decode("ascii").split(";", 1)[0]
+                name = record.file_identifier().decode("ascii", "replace").split(";", 1)[0]
                 if record.rock_ridge is not None:
                     name = record.rock_ridge.name().decode("utf-8")
                 elif not record.is_dir():
