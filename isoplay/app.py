@@ -126,7 +126,7 @@ class Player(QMainWindow):
 
     def build_actions(self):
         self.act_open = self.action("Open File…", QKeySequence.Open, self.browse)
-        self.act_url = self.action("Open Location…", "Ctrl+L", self.ask_url)
+        self.act_url = self.action("Open Link…", "Ctrl+L", self.ask_url)
         self.act_paste = self.action("Play Copied Link", QKeySequence.Paste, self.paste)
         self.act_close = self.action("Close Video", QKeySequence.Close, self.close_video)
         self.act_pause = self.action("Play/Pause", None, self.toggle_pause)
@@ -196,7 +196,7 @@ class Player(QMainWindow):
         acts = QHBoxLayout()
         acts.setSpacing(10)
         for icon, text, key, slot in (("folder", "Open File…", f"{MOD}O", self.browse),
-                                      ("link", "Open Location…", f"{MOD}L", self.ask_url)):
+                                      ("link", "Open Link…", f"{MOD}L", self.ask_url)):
             b = QPushButton(objectName="action", cursor=Qt.PointingHandCursor, icon=svg_icon(icon, 36, ICON),
                             iconSize=QSize(16, 16), clicked=slot)
             row = QHBoxLayout(b)

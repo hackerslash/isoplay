@@ -33,7 +33,7 @@ from isoplay.widgets import ElidedLabel, MediaBadge, OptionsMenu, PreferenceRow,
 class WelcomeHarness:
     def __init__(self):
         self.act_open = QAction("Open File…")
-        self.act_url = QAction("Open Location…")
+        self.act_url = QAction("Open Link…")
         self.act_menus = QAction("Start Discs at Their Menu")
         self.act_menus.setCheckable(True)
         self.act_auto_updates = QAction("Check for Updates Automatically")
