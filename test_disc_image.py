@@ -1,13 +1,16 @@
 """Socket-free regressions for ISO9660 Blu-ray streaming and the HTTP view."""
 import io
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pycdlib
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import isoplay
 from disc_image import CacheFile, project_iso9660
 
@@ -62,6 +65,62 @@ def fixture(large=False, udf=False, nested=True):
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_select_bonus_disc_and_return_to_feature(self):
+        with fixture() as fp:
+            cache = FileCache(fp)
+            for root, contents in ((None, b"INDX0200/FEATURE"),
+                                   ("/BONUS", b"INDX0200/BONUS"),
+                                   ("/FEATURE", b"INDX0200/FEATURE")):
+                view = project_iso9660(cache, root=root)
+                try:
+                    self.assertEqual(view.discs, ("/FEATURE", "/BONUS"))
+                    self.assertEqual(view.disc_root, root if root is not None else "/FEATURE")
+                    iso = pycdlib.PyCdlib()
+                    iso.open_fp(CacheFile(view))
+                    try:
+                        with iso.open_file_from_iso(udf_path="/BDMV/index.bdmv") as index:
+                            self.assertEqual(index.read(), contents)
+                    finally:
+                        iso.close()
+                finally:
+                    view.close()
+
+    def test_invalid_disc_selection_does_not_silently_play_feature(self):
+        with fixture() as fp:
+            with self.assertRaisesRegex(ValueError, "disc folder"):
+                project_iso9660(FileCache(fp), root="/MISSING")
+
+    def test_main_title_fallback_keeps_selected_disc(self):
+        calls = []
+        class Playback:
+            current = "https://example.com/container.iso"
+            disc_root = "/BONUS"
+            use_menus = True
+            def play(self, src, **options):
+                calls.append((src, options))
+        player = Playback()
+        isoplay.Player.replay_main(player)
+        self.assertEqual(calls, [(player.current, {"menus": False, "disc_root": "/BONUS"})])
+
+    def test_disc_menu_action_switches_to_bonus(self):
+        app = isoplay.QApplication.instance() or isoplay.QApplication([])
+        menu = isoplay.QMenu()
+        calls = []
+        player = SimpleNamespace(
+            proxy=SimpleNamespace(view=SimpleNamespace(discs=("/THE_ODYSSEY", "/SPECIAL_FEATURES"))),
+            disc_root="/THE_ODYSSEY", current="https://example.com/container.iso", use_menus=True,
+            play=lambda src, **options: calls.append((src, options)),
+        )
+        player.switch_disc = lambda root: isoplay.Player.switch_disc(player, root)
+        isoplay.Player.add_disc_choices(player, menu)
+        choices = menu.actions()[0].menu()
+        self.assertEqual(choices.title(), "Discs in This Image")
+        self.assertEqual([a.text() for a in choices.actions()], ["The Odyssey", "Special Features"])
+        self.assertTrue(choices.actions()[0].isChecked())
+        choices.actions()[1].trigger()
+        self.assertEqual(calls, [(player.current, {"menus": True, "disc_root": "/SPECIAL_FEATURES"})])
+        menu.close()
+
     def test_nested_feature_and_multi_extent_payload(self):
         with fixture(large=True) as fp:
             cache = FileCache(fp)

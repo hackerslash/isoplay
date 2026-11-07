@@ -22,7 +22,8 @@
   responsive on slow hosts. Links don't need `.iso` in them; the disc type comes from the contents.
 - **Plays ordinary video** too, local or remote.
 - **Handles ISO9660 Blu-ray containers over HTTP**, including images with multiple disc folders.
-  Selects the disc with the most video data and streams it with menus, without extracting the image.
+  Starts with the disc with the most video data and streams it with menus, without extracting the image.
+  Use **Discs in This Image** in the track menu to switch to a bonus or special-features disc.
 - **Everything bundled:** libVLC with libbluray and libdvdnav, plus a trimmed Java 17 runtime.
 
 ## Install

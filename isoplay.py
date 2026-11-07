@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMenu, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 UA = "Mozilla/5.0 isoplay"
 
 
@@ -251,7 +251,7 @@ def sniff(url):
         return False
 
 
-def prepare(src):
+def prepare(src, disc_root=None):
     """How libVLC should open src: (mrl, "bluray" | "dvd" | None, RangeCache | None). Blocks on I/O."""
     ext = suffix(src)
     if not is_url(src):
@@ -279,7 +279,7 @@ def prepare(src):
         udf = any(data[s * 2048 + 1:s * 2048 + 6] in (b"BEA01", b"NSR02", b"NSR03")
                   for s in range(16, 32))
         if kind == "bluray" and not udf:
-            proxy.view = project_iso9660(proxy)
+            proxy.view = project_iso9660(proxy, root=disc_root)
         return proxy.mrl, kind, proxy
     except Exception:
         proxy.close()
@@ -517,6 +517,7 @@ class Player(QMainWindow):
         self.mp.video_set_key_input(False)
         self.mp.video_set_mouse_input(True)
         self.disc = self.proxy = self.current = None
+        self.disc_root = None
         self.token = 0
         self.use_menus = self.remaining = True
         self.last_pos, self.last_move = QPoint(), 0.0
@@ -790,7 +791,11 @@ class Player(QMainWindow):
 
     def replay_main(self):
         if self.current:
-            self.play(self.current, menus=False)
+            self.play(self.current, menus=False, disc_root=self.disc_root)
+
+    def switch_disc(self, root):
+        if self.current and root != self.disc_root:
+            self.play(self.current, menus=self.use_menus, disc_root=root)
 
     def close_video(self):
         self.token += 1
@@ -799,12 +804,13 @@ class Player(QMainWindow):
             self.proxy.close()
             self.proxy = None
         self.current = self.disc = None
+        self.disc_root = None
         self.setWindowTitle("isoplay")
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
         self.osd_until = 0
 
-    def play(self, src, menus=None):
+    def play(self, src, menus=None, disc_root=None):
         if not src:
             return
         self.close_video()
@@ -817,7 +823,7 @@ class Player(QMainWindow):
 
         def work():
             try:
-                result = prepare(src)
+                result = prepare(src, disc_root=disc_root)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 result = e
             self.bridge.prepared.emit(token, result)
@@ -833,6 +839,7 @@ class Player(QMainWindow):
             self.flash(f"Couldn't open this. {result}", seconds=10)
             return
         mrl, self.disc, self.proxy = result
+        self.disc_root = self.proxy.view.disc_root if self.proxy and self.proxy.view else None
         self.remember(self.current, self.disc)
         media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
         media.add_option(f":http-user-agent={UA}")
@@ -919,10 +926,23 @@ class Player(QMainWindow):
         if self.disc:
             menu.addSeparator()
             menu.addAction("Disc").setEnabled(False)
+            self.add_disc_choices(menu)
             menu.addAction(self.act_discmenu)
             menu.addAction(self.act_main)
             menu.addAction(self.act_menus)
         menu.exec(self.tracks_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)))
+
+    def add_disc_choices(self, menu):
+        view = self.proxy.view if self.proxy else None
+        if not view or len(view.discs) < 2:
+            return
+        choices = menu.addMenu("Discs in This Image")
+        for root in view.discs:
+            label = root.strip("/").replace("_", " ").title() or "Disc"
+            action = choices.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(root == self.disc_root)
+            action.triggered.connect(lambda _=False, selected=root: self.switch_disc(selected))
 
     # --- overlay -----------------------------------------------------------------------------------
 

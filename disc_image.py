@@ -171,11 +171,11 @@ class _ExtentFile(io.RawIOBase):
         return bytes(out)
 
 
-def project_iso9660(cache):
+def project_iso9660(cache, root=None):
     """Return a UDF view for an ISO9660-only Blu-ray, or None for other images.
 
-    When a container has multiple discs, select the one with the most stream
-    data (the feature rather than the bonus disc). No media payload is fetched.
+    Default to the disc with the most stream data; root selects a different
+    disc folder. Expose all choices on the view. No media payload is fetched.
     """
     original = pycdlib.PyCdlib()
     original.open_fp(CacheFile(cache))
@@ -208,11 +208,15 @@ def project_iso9660(cache):
         for path, fp in streams.items():
             parent, _, name = path.rpartition("/")
             if parent.upper().endswith("/BDMV/STREAM") and name.upper().endswith(".M2TS"):
-                root = parent[:-len("/BDMV/STREAM")]
-                candidates[root] = candidates.get(root, 0) + fp.size
+                disc_root = parent[:-len("/BDMV/STREAM")]
+                candidates[disc_root] = candidates.get(disc_root, 0) + fp.size
         if not candidates:
             return None
-        root = max(candidates, key=candidates.get)
+        discs = tuple(sorted(candidates, key=lambda path: (-candidates[path], path)))
+        if root is None:
+            root = discs[0]
+        elif root not in candidates:
+            raise ValueError("The selected disc folder is not in this image")
         udf = _MappedUDF()
         udf.new(interchange_level=3, udf="2.60", vol_ident="ISOPLAY")
         for path in sorted(directories, key=lambda p: (p.count("/"), p)):
@@ -228,6 +232,7 @@ def project_iso9660(cache):
         view.files.sort(key=lambda entry: entry[0])
         view.starts = [entry[0] for entry in view.files]
         view.udf, view.handles = udf, handles
+        view.discs, view.disc_root = discs, root
         return view
     finally:
         original.close()
