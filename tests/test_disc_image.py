@@ -395,9 +395,10 @@ class ProjectionTests(unittest.TestCase):
                 self.assertIsNotNone(cache.view)
                 size = cache.view.size
                 self.assertNotEqual(size, cache.size)
+                handler = media._endpoint(cache)
                 for command, rng in (("GET", "bytes=32768-32775"), ("GET", "bytes=-40"),
                                      ("HEAD", None), ("GET", f"bytes={size}-")):
-                    h = cache._handler().__new__(cache._handler())
+                    h = handler.__new__(handler)
                     h.headers = Message()
                     if rng:
                         h.headers["Range"] = rng

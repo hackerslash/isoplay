@@ -17,8 +17,8 @@ from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
 from isoplay import webdav
-from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature,  # noqa: F401 - re-exported
-                                 project_iso9660, project_media, project_remote, project_zip)
+from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature, project_iso9660, project_media,
+                                 project_remote, project_zip)
 
 UA = "Mozilla/5.0 isoplay"
 DEBUG = bool(os.environ.get("ISOPLAY_DEBUG"))
@@ -211,7 +211,7 @@ class Blocks:
                     if attempt == 2:
                         raise
             else:
-                raise OSError(f"short read at block {i}")  # noqa: TRY003
+                raise OSError(f"short read at block {i}")
             with self.lock:
                 self.blocks[i] = data
                 while len(self.blocks) > self.keep:
@@ -232,10 +232,13 @@ class Blocks:
                 self.pending[i] = self.pool.submit(self._load, i)
             return self.pending[i]
 
+    def want(self, pos, n):
+        """Queue the blocks under a span without waiting for them."""
+        for i in range(pos // self.bs, (min(pos + n, self.size) + self.bs - 1) // self.bs):
+            self.block(i)
+
     def read(self, pos, n):
-        end = min(pos + n, self.size)
-        for i in range(pos // self.bs, (end + self.bs - 1) // self.bs):
-            self.block(i)  # queue the whole span before waiting on any of it
+        self.want(pos, n)  # queue the whole span before waiting on any of it
         out = bytearray()
         while n > 0 and pos < self.size:
             i, off = divmod(pos, self.bs)
@@ -271,9 +274,6 @@ class RangeCache(Blocks, Served):
         Served.close(self)
         Blocks.close(self)
 
-    def _handler(self):
-        return _endpoint(self)
-
 
 def _endpoint(cache):
     last = (cache.size - 1) // BLOCK
@@ -298,7 +298,8 @@ def _endpoint(cache):
             # A player asks for the rest of the disc, reads a little and seeks away. Answering in
             # full leaves a thread streaming gigabytes nobody reads, whose read-ahead then crowds
             # out the seek that follows -- which the player reports as a seek failure.
-            end = min(end, start + SERVE_CAP - 1)
+            if partial:  # a 200 must carry the whole entity, so only a range can be cut short
+                end = min(end, start + SERVE_CAP - 1)
             if start >= size or end < start:
                 trace(f"serve {self.headers.get('Range', '')} -> 416 (size {size})")
                 self.send_response(416)
@@ -419,9 +420,7 @@ class RemoteFile(io.RawIOBase):
         return self.pos
 
     def want(self, pos, size):
-        """Queue the blocks under a span without waiting for them."""
-        for i in range(pos // self.cache.bs, (min(pos + size, self.size) + self.cache.bs - 1) // self.cache.bs):
-            self.cache.block(i)
+        self.cache.want(pos, size)
 
     def pread(self, pos, size):
         size = min(size, self.size - pos)
@@ -591,7 +590,7 @@ def _project(image, project):
 
 
 def prepare(src, disc_root=None):
-    """How libVLC should open src: (mrl, kind, RangeCache | None, disc roots, chosen root). Blocks on I/O."""
+    """How libVLC should open src: (mrl, kind, Served | None, disc roots, chosen root). Blocks on I/O."""
     ext = suffix(src)
     if ext in ARCHIVE_EXT:
         raise OSError(f"isoplay can't open {ext} archives")

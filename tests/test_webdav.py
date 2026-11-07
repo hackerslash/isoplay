@@ -1,6 +1,5 @@
 """A disc folder on a WebDAV share, listed and projected without a socket to the outside."""
 import base64
-import io
 import os
 import threading
 import unittest
@@ -149,6 +148,18 @@ class ShareTests(unittest.TestCase):
     def test_a_share_rejecting_the_credentials_says_so(self):
         with self.assertRaisesRegex(OSError, "rejected"):
             media.prepare(self.open(require_auth=True, user="me:wrong@"))
+
+    def test_listing_survives_full_url_hrefs_split_propstats_and_other_encodings(self):
+        body = (b'<?xml version="1.0"?><multistatus xmlns="DAV:">'
+                b'<response><href>http://host/My%20Disc/</href>'
+                b'<propstat><prop><getcontentlength/></prop><status>HTTP/1.1 404</status></propstat>'
+                b'<propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>'
+                b'<response><href>http://host/My%20Disc/a%2Bb.m2ts</href>'
+                b'<propstat><prop><resourcetype/></prop></propstat>'
+                b'<propstat><prop><getcontentlength>42</getcontentlength></prop></propstat></response>'
+                b'</multistatus>')
+        files = webdav.walk("http://me:pw@host/My Disc/", lambda url: body)
+        self.assertEqual(files, {"a+b.m2ts": ("http://me:pw@host/My%20Disc/a%2Bb.m2ts", 42)})
 
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):

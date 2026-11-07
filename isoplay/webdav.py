@@ -22,20 +22,22 @@ def children(body, base):
     out = []
     for response in tree.findall(DAV + "response"):
         href = response.findtext(DAV + "href")
-        prop = response.find(f"{DAV}propstat/{DAV}prop")
-        if href is None or prop is None:
+        if href is None:
             continue
-        collection = prop.find(f"{DAV}resourcetype/{DAV}collection") is not None
-        length = prop.findtext(DAV + "getcontentlength")
-        out.append((urllib.parse.urljoin(base, href.strip()),
-                    None if collection else int(length) if length and length.isdigit() else 0))
+        # Found and missing props come in separate propstats, in either order.
+        collection = response.find(f"{DAV}propstat/{DAV}prop/{DAV}resourcetype/{DAV}collection") is not None
+        length = next((e.text.strip() for e in response.iterfind(f"{DAV}propstat/{DAV}prop/{DAV}getcontentlength")
+                       if e.text and e.text.strip().isdigit()), "0")
+        # Only the path: a full-URL href would drop the link's user:pass.
+        out.append((urllib.parse.urljoin(base, urllib.parse.urlsplit(href.strip()).path),
+                    None if collection else int(length)))
     return out
 
 
 def walk(root, propfind):
     """{path below root: (url, size)} for every file on the share."""
     root = root if root.endswith("/") else root + "/"
-    base = urllib.parse.urlsplit(root).path
+    base = urllib.parse.unquote(urllib.parse.urlsplit(root).path)
     files, todo = {}, [root]
     while todo:
         url = todo.pop()
@@ -43,8 +45,9 @@ def walk(root, propfind):
         if url == root and not listed:
             raise OSError("That link isn't a WebDAV share")
         for child, size in listed:
-            path = urllib.parse.urlsplit(child).path
-            if path.rstrip("/") == urllib.parse.urlsplit(url).path.rstrip("/"):
+            # Servers differ from the link in what they percent-encode, so compare decoded.
+            path = urllib.parse.unquote(urllib.parse.urlsplit(child).path)
+            if path.rstrip("/") == urllib.parse.unquote(urllib.parse.urlsplit(url).path).rstrip("/"):
                 continue  # a collection lists itself first
             if not path.startswith(base):
                 continue
@@ -52,7 +55,7 @@ def walk(root, propfind):
                 if child.count("/") - root.count("/") < MAX_DEPTH:
                     todo.append(child if child.endswith("/") else child + "/")
                 continue
-            files[urllib.parse.unquote(path[len(base):])] = (child, size)
+            files[path[len(base):]] = (child, size)
             if len(files) > MAX_FILES:
                 raise OSError("That share has too many files to open as a disc")
     return files
