@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
 from isoplay import webdav
+from isoplay.diskcache import DiskCache
 from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature, project_iso9660, project_media,
                                  project_remote, project_zip)
 
@@ -215,6 +216,7 @@ class Memory:
                 self.size -= len(self.items.popitem(last=False)[1])
 
 
+DISK = None  # a DiskCache the app sets up; blocks a reader asked for outlive the play in it
 KEEP = 256 << 20  # RAM for one link's blocks, or for all of a share's together: the window and behind it
 RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
 # How far read-ahead runs past the player: ~20 s of UHD. libVLC's own buffer stays short so a
@@ -253,6 +255,7 @@ class Blocks:
         self.background = background  # where read-ahead queues, if not behind readers in `pool`
         self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(streams + 2), True)
         self.size = self._size() if size is None else size  # a share already knows it
+        self.disk_key = DiskCache.key(bare(url), self.size, self.bs)
 
     def _streams(self):
         return int(self.limit)
@@ -274,7 +277,14 @@ class Blocks:
                               "Download the file first")
             return int(r.headers["Content-Range"].rsplit("/", 1)[1])
 
-    def _fetch(self, first, futures):
+    def _disk(self, i):
+        """Block i from the disk cache into memory, if a past play left it there. Lock held."""
+        data = DISK.get(self.disk_key, i) if DISK else None
+        if data is not None:
+            self.memory.put((self, i), data)
+        return data
+
+    def _fetch(self, first, futures, store=True):
         start = first * self.bs
         end = min((first + len(futures)) * self.bs, self.size) - 1
         throttles, ok = self.upstream.throttles, True
@@ -295,6 +305,8 @@ class Blocks:
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             for k, part in enumerate(parts):
                 self.memory.put((self, first + k), part)
+                if store and DISK:  # what a reader asked for; read-ahead of a film would flush the menus
+                    DISK.put(self.disk_key, first + k, part)
             for future, part in zip(futures, parts):
                 future.set_result(part)
         except BaseException as e:
@@ -309,13 +321,13 @@ class Blocks:
                     self.warming.pop(first + k, None)
                 self.requests -= 1
 
-    def _queue(self, first, last, pool=None):
+    def _queue(self, first, last, pool=None, store=True):
         """Fetch blocks [first, last) in one request. Lock held; none of them cached or pending."""
         futures = [Future() for _ in range(first, last)]
         for k, future in enumerate(futures):
             self.pending[first + k] = future
         self.requests += 1
-        job = (pool or self.pool).submit(self._fetch, first, futures)
+        job = (pool or self.pool).submit(self._fetch, first, futures, store)
         if pool:
             for k in range(len(futures)):
                 self.warming[first + k] = (job, first, futures)
@@ -327,28 +339,31 @@ class Blocks:
             _, first, futures = entry
             for k in range(len(futures)):
                 self.warming.pop(first + k, None)
-            self.pool.submit(self._fetch, first, futures)
+            self.pool.submit(self._fetch, first, futures, True)
 
-    def _queue_span(self, first, last, limit=None, pool=None):
+    def _queue_span(self, first, last, limit=None, pool=None, store=True):
         """Queue the missing blocks of [first, last) in runs, stopping at `limit` requests in flight."""
         with self.lock:
             i = first
             while i < last:
-                if (self, i) in self.memory or i in self.pending:
+                if (self, i) in self.memory or i in self.pending or self._disk(i) is not None:
                     i += 1
                     continue
                 if limit is not None and self.requests >= limit:
                     self.starved = True
                     return
                 j = i + 1
-                while j < min(last, i + self.run) and (self, j) not in self.memory and j not in self.pending:
+                while (j < min(last, i + self.run) and (self, j) not in self.memory and j not in self.pending
+                       and not (DISK and DISK.has(self.disk_key, j))):
                     j += 1
-                self._queue(i, j, pool)
+                self._queue(i, j, pool, store)
                 i = j
 
     def block(self, i):
         with self.lock:
             data = self.memory.get((self, i))
+            if data is None and i not in self.pending:
+                data = self._disk(i)
             if data is not None:
                 f = Future()
                 f.set_result(data)
@@ -391,7 +406,7 @@ class Blocks:
             self.streak[1] = max(self.streak[1], first)
             ahead = min(self.ahead, self.run + 2 * (first - self.streak[0]))
         last = min(first + 1 + ahead, (self.size + self.bs - 1) // self.bs)
-        self._queue_span(first + 1, last, limit=self._streams() + 1, pool=self.background)
+        self._queue_span(first + 1, last, limit=self._streams() + 1, pool=self.background, store=False)
 
     def close(self):
         if self.own_pool:

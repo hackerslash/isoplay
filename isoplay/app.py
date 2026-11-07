@@ -9,16 +9,19 @@ from pathlib import Path
 from isoplay import runtime  # noqa: F401 - sets the VLC environment before vlc loads
 
 import vlc  # noqa: E402
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QSettings, Qt, QTimer, Signal  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal,
+)
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from isoplay import updates  # noqa: E402
+from isoplay import media, updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
 from isoplay.media import UA, display_name, fmt, is_url, normalize, prepare  # noqa: E402
+from isoplay.diskcache import GB, DiskCache  # noqa: E402
 from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
@@ -34,6 +37,7 @@ TITLE_BAR = 28  # height macOS slides over a full-screen window, below the menu 
 STALL = 45  # seconds of a black screen before an open is called a failure
 FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
+CACHE_GB = (0, 1, 2, 5, 10, 20, 50)  # disk cache sizes offered; 2 unless changed
 
 
 class Bridge(QObject):
@@ -54,6 +58,9 @@ class Player(QMainWindow):
         self.setAcceptDrops(True)
         self.setStyleSheet(CSS + ("" if MAC else MENU_CSS))
         self.settings = QSettings("isoplay", "isoplay")
+        cache_gb = self.settings.value("cache/gb", 2, type=int)
+        media.DISK = DiskCache(Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "blocks",
+                               cache_gb * GB)
         self.vlc = vlc.Instance(["--no-video-title-show", "--network-caching=3000"]
                                 + (["-vv"] if os.environ.get("ISOPLAY_DEBUG") else []))
         self.mp = self.vlc.media_player_new()
@@ -160,18 +167,48 @@ class Player(QMainWindow):
                                            checkable=True)
         self.act_auto_updates.setChecked(self.settings.value("updates/automatic", True, type=bool))
         self.updater.busy_changed.connect(lambda busy: self.act_updates.setEnabled(not busy))
+        self.cache_menu = self.build_cache_menu()
         if MAC:
             bar = self.menuBar()
             for title, acts in (("File", (self.act_open, self.act_folder, self.act_url, self.act_paste,
                                           None, self.act_close)),
                                 ("Playback", (self.act_pause, None, self.act_prev, self.act_next, None,
-                                              self.act_discmenu, self.act_main, None, self.act_menus)),
+                                              self.act_discmenu, self.act_main, None, self.act_menus,
+                                              self.cache_menu)),
                                 ("Video", (self.act_full, None, *self.fit_group.actions(),
                                            None, self.act_subs)),
                                 ("Help", (self.act_updates, self.act_auto_updates))):
                 m = bar.addMenu(title)
                 for a in acts:
-                    m.addAction(a) if a else m.addSeparator()
+                    if isinstance(a, QMenu):
+                        m.addMenu(a)
+                    else:
+                        m.addAction(a) if a else m.addSeparator()
+
+    def build_cache_menu(self):
+        """How much disk keeps what discs were opened with, so they reopen without the round trips."""
+        menu = QMenu("Disk Cache", self)
+        sizes = QActionGroup(menu)
+        chosen = self.settings.value("cache/gb", 2, type=int)
+        for gb in CACHE_GB:
+            item = menu.addAction(f"{gb} GB" if gb else "Off")
+            item.setCheckable(True)
+            item.setChecked(gb == chosen)
+            item.triggered.connect(lambda _=False, n=gb: self.set_cache(n))
+            sizes.addAction(item)
+        menu.addSeparator()
+        clear = menu.addAction("Clear Disk Cache", self.clear_cache)
+        menu.aboutToShow.connect(lambda: clear.setText(f"Clear Disk Cache ({media.DISK.used() / GB:.1f} GB)"))
+        return menu
+
+    def set_cache(self, gb):
+        self.settings.setValue("cache/gb", gb)
+        threading.Thread(target=media.DISK.set_limit, args=(gb * GB,), daemon=True).start()
+        self.flash(f"Disk cache: {gb} GB" if gb else "Disk cache off", 1.5)
+
+    def clear_cache(self):
+        threading.Thread(target=media.DISK.clear, daemon=True).start()
+        self.flash("Disk cache cleared", 1.5)
 
     def build_welcome(self):
         page = QWidget(objectName="welcome")
@@ -206,7 +243,7 @@ class Player(QMainWindow):
         options.setAccessibleName("Options")
         options.setToolTip("Playback and update preferences")
         options.setPopupMode(QToolButton.InstantPopup)
-        preferences = OptionsMenu(options, self.act_menus, self.act_auto_updates, self.act_updates)
+        preferences = OptionsMenu(options, self.act_menus, self.act_auto_updates, self.act_updates, self.cache_menu)
         options.setMenu(preferences)
         head.addWidget(options)
         col.addLayout(head)

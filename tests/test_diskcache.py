@@ -1,0 +1,71 @@
+"""Blocks kept on disk between plays."""
+import os
+import tempfile
+import time
+import unittest
+
+from isoplay import media
+from isoplay.diskcache import DiskCache
+
+
+class Upstream:
+    throttles, closed = 0, False
+
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, start, end):
+        self.calls += 1
+        return media._Body(206, {}, bytes([start % 251]) * (end - start + 1))
+
+    def close(self):
+        pass
+
+
+K = DiskCache.key("http://host/disc.iso", 100, 4)
+
+
+class DiskCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def test_blocks_round_trip_and_the_oldest_go_first_past_the_limit(self):
+        cache = DiskCache(self.root, limit=10)
+        cache.put(K, 0, b"aaaa")
+        cache.put(K, 1, b"bbbb")
+        old = time.time() - 60
+        os.utime(cache._path(K, 0), (old, old))
+        cache.put(K, 2, b"cccc")  # 12 bytes: over, so down to 90%
+        self.assertIsNone(cache.get(K, 0))
+        self.assertEqual(cache.get(K, 2), b"cccc")
+        self.assertLessEqual(cache.used(), 10)
+
+    def test_off_and_clear_leave_nothing(self):
+        cache = DiskCache(self.root, limit=1 << 20)
+        cache.put(K, 0, b"data")
+        cache.clear()
+        self.assertEqual(cache.used(), 0)
+        cache.set_limit(0)
+        cache.put(K, 0, b"data")
+        self.assertIsNone(cache.get(K, 0))
+
+    def test_a_reopened_file_reads_what_a_reader_fetched_but_not_read_ahead(self):
+        media.DISK = DiskCache(self.root, limit=1 << 30)
+        self.addCleanup(setattr, media, "DISK", None)
+        mib = 1 << 20
+        first = Upstream()
+        blocks = media.Blocks("http://host/disc.iso", size=64 * mib, upstream=first, bs=mib)
+        data = blocks.read(0, mib)
+        blocks.prefetch(mib)  # a reader on block 1, read-ahead behind it
+        blocks.read(mib, mib)
+        blocks.close()
+        again = Upstream()
+        reopened = media.Blocks("http://host/disc.iso", size=64 * mib, upstream=again, bs=mib)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.read(0, mib), data)
+        self.assertEqual(again.calls, 0)
+        self.assertFalse(media.DISK.has(reopened.disk_key, 3))  # read-ahead only ever lived in RAM
+
+
+if __name__ == "__main__":
+    unittest.main()

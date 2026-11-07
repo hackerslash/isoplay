@@ -167,7 +167,7 @@ class PreferenceRow(QPushButton):
 
 
 class OptionsMenu(QMenu):
-    def __init__(self, parent, disc_menus, automatic_updates, check_updates):
+    def __init__(self, parent, disc_menus, automatic_updates, check_updates, disk_cache=None):
         super().__init__(parent)
         self.setObjectName("optionsMenu")
         self.setMinimumWidth(330)
@@ -179,6 +179,8 @@ class OptionsMenu(QMenu):
             item.triggered.connect(action.trigger)
             self.addAction(item)
         self.addSeparator()
+        if disk_cache:
+            self.addMenu(disk_cache)
         self.addAction(check_updates)
 
 

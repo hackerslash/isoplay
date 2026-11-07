@@ -22,7 +22,7 @@ if library.is_file():
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QImage, QRegion
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QScrollArea, QToolButton, QWidget
 
 from isoplay import theme
 from isoplay.app import Player
@@ -39,6 +39,7 @@ class WelcomeHarness:
         self.act_auto_updates = QAction("Check for Updates Automatically")
         self.act_auto_updates.setCheckable(True)
         self.act_updates = QAction("Check for Updates…")
+        self.cache_menu = QMenu("Disk Cache")
         self.settings = Mock()
         self.updater = Mock()
         self.browse = self.ask_url = self.play = self.clear_recent = self.menus_changed = Mock()
@@ -161,6 +162,8 @@ class WelcomeLayoutTests(unittest.TestCase):
         QTest.keyClick(menu, Qt.Key_Return)
         self.assertTrue(owner.act_menus.isChecked(), "menu rows are not keyboard reachable")
         menu.close()
+        with_cache = OptionsMenu(None, owner.act_menus, owner.act_auto_updates, owner.act_updates, owner.cache_menu)
+        self.assertIn(owner.cache_menu.menuAction(), with_cache.actions())
 
     def test_badges_fill_their_box_without_spilling_into_the_corners(self):
         host = QWidget()
