@@ -1,6 +1,8 @@
 import os
 import re
 import threading
+import time
+import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
@@ -129,3 +131,55 @@ mrl, kind, proxy, *_ = prepare(url)
 assert kind == "dvd" and mrl.startswith("http://127.0.0.1:") and proxy
 proxy.close()
 print("ok")
+
+
+class RangeIgnoredTests(unittest.TestCase):
+    """Some hosts advertise Accept-Ranges and then send the whole file anyway."""
+
+    def serve(self, size):
+        sent = []
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)  # the Range header is ignored outright
+                self.send_header("Content-Length", str(size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                try:
+                    while sum(sent) < size:  # slow enough that draining it would take hours
+                        self.wfile.write(b"\0" * (64 << 10))
+                        sent.append(64 << 10)
+                        time.sleep(0.05)
+                except Exception:
+                    pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        server.daemon_threads = True
+        server.handle_error = lambda *a: None  # the client hangs up mid-body by design
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/huge.iso", sent
+
+    def test_refused_promptly_instead_of_buffering_the_whole_file(self):
+        url, sent = self.serve(64 << 30)
+        started = time.monotonic()
+        with self.assertRaises(OSError) as caught:
+            RangeCache(url)
+        self.assertIn("Range", str(caught.exception))
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertLess(sum(sent), 64 << 20)  # nowhere near the 64 GiB it offered
+
+    def test_a_range_answered_from_the_head_of_the_file_is_not_passed_off_as_data(self):
+        url, _ = self.serve(64 << 30)
+        with self.assertRaisesRegex(OSError, "Range"):
+            Upstream(url).get(1 << 30, (1 << 30) + 4095)
+
+
+if __name__ == "__main__":
+    unittest.main()

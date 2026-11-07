@@ -1,6 +1,7 @@
 """Locating, probing and streaming the thing the user asked to play. No Qt here."""
 import http.client
 import io
+import os
 import re
 import sys
 import threading
@@ -18,6 +19,12 @@ from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature,  #
                                  project_iso9660, project_media, project_zip)
 
 UA = "Mozilla/5.0 isoplay"
+DEBUG = bool(os.environ.get("ISOPLAY_DEBUG"))
+
+
+def trace(message):
+    if DEBUG:
+        print(f"[isoplay] {message}", file=sys.stderr, flush=True)
 
 
 def is_url(src):
@@ -84,12 +91,19 @@ class Upstream:
                                    headers={"Range": f"bytes={start}-{end}", "User-Agent": UA,
                                             "Accept-Encoding": "identity"})
                 response = connection.getresponse()
-                data = response.read()
-            except (http.client.HTTPException, OSError):
+                # Bounded: a server that ignores Range answers with the whole file, and some
+                # of those files are tens of gigabytes.
+                data = response.read(end - start + 1)
+            except (http.client.HTTPException, OSError) as e:
+                trace(f"upstream {start}-{end} attempt {attempt + 1} failed: {e!r}")
                 self._drop()
                 if attempt == 2:
                     raise
                 continue
+            if response.status == 200:
+                self._drop()  # the rest of the body is still pending, so the connection is spent
+                if start:  # these bytes are the head of the file, not the range we asked for
+                    raise OSError("That server ignores Range requests, so it can't be streamed")
             if response.status in REDIRECTS and response.getheader("Location"):
                 self.url = urllib.parse.urljoin(url, response.getheader("Location"))
                 self._drop()
@@ -141,7 +155,8 @@ class RangeCache:
     def _size(self):
         with self._get(0, 0) as r:
             if r.status != 206:
-                raise OSError("server ignores Range requests, so a disc cannot be streamed")
+                raise OSError("That server ignores Range requests, so it can't be streamed. "
+                              "Download the file first")
             return int(r.headers["Content-Range"].rsplit("/", 1)[1])
 
     def _load(self, i):
@@ -158,7 +173,7 @@ class RangeCache:
                     if attempt == 2:
                         raise
             else:
-                raise OSError(f"short read at block {i}")
+                raise OSError(f"short read at block {i}")  # noqa: TRY003
             with self.lock:
                 self.blocks[i] = data
                 while len(self.blocks) > self.keep:
@@ -270,7 +285,8 @@ def _endpoint(cache):
                     pos += len(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 pass
-            except Exception:
+            except Exception as e:
+                trace(f"serving {self.headers.get('Range', 'whole file')} failed at {pos}: {e!r}")
                 self.close_connection = True
 
     return H

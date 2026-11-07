@@ -10,6 +10,11 @@
   in an archive keeps its menus instead of being refused
 - Local ISO9660 Blu-rays get their menus too: they are republished as UDF like a linked one
   rather than handed to libbluray, which cannot read ISO9660
+- A host that advertises `Accept-Ranges` and then answers with the whole file is now refused
+  in seconds. The body read was unbounded, so such a link tried to buffer the entire file into
+  memory before anything noticed the range had been ignored
+- `ISOPLAY_DEBUG=1` now also reports upstream retries and errors the local server hits, which
+  were being swallowed silently
 - Transport controls no longer stay pinned over a disc menu: a still menu reports "not playing",
   which the auto-hide rule read as "keep the controls up"
 
