@@ -10,7 +10,6 @@ if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--apply-upd
 import json
 import os
 import re
-import tempfile
 import threading
 import urllib.parse
 from collections import OrderedDict
@@ -56,7 +55,7 @@ from PySide6.QtGui import (  # noqa: E402
 )
 from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
+    QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
     QWidgetAction,
 )
@@ -353,10 +352,6 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 #recentScroll QScrollBar::add-line:vertical, #recentScroll QScrollBar::sub-line:vertical {{ height: 0; }}
 #recentScroll QScrollBar::add-page:vertical, #recentScroll QScrollBar::sub-page:vertical {{ background: transparent; }}
 #empty {{ color: {INK3}; font-size: 13px; }}
-QCheckBox {{ color: {INK2}; font-size: 12px; spacing: 8px; margin-left: 10px; }}
-QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.28);
-    background: rgba(255,255,255,0.04); }}
-QCheckBox::indicator:checked {{ background: #0a84ff; border-color: #0a84ff; image: url(CHECK); }}
 #panel {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; }}
 #panel QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 4px; }}
 #panel QPushButton:hover {{ background: rgba(255,255,255,0.10); }}
@@ -413,7 +408,6 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
     "folder": "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z",
     "link": "M3.9 12A3.1 3.1 0 0 1 7 8.9h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM8 13h8v-2H8v2z"
             "m9-6h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10z",
-    "check": "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
     "more": "M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
 }
 
@@ -698,10 +692,7 @@ class Player(QMainWindow):
         self.resize(1120, 630)
         self.setMinimumSize(640, 400)
         self.setAcceptDrops(True)
-        check = Path(tempfile.gettempdir()) / "isoplay-check.svg"
-        check.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-                         f'<path fill="#fff" d="{ICONS["check"]}"/></svg>')
-        self.setStyleSheet(CSS.replace("CHECK", check.as_posix()) + ("" if MAC else MENU_CSS))
+        self.setStyleSheet(CSS + ("" if MAC else MENU_CSS))
         self.settings = QSettings("isoplay", "isoplay")
         self.vlc = vlc.Instance(["--no-video-title-show", "--network-caching=3000"]
                                 + (["-vv"] if os.environ.get("ISOPLAY_DEBUG") else []))

@@ -55,7 +55,7 @@ class WelcomeLayoutTests(unittest.TestCase):
     def test_recent_text_is_not_crushed_when_window_is_short(self):
         owner = WelcomeHarness()
         page = isoplay.Player.build_welcome(owner)
-        page.setStyleSheet(isoplay.CSS.replace("CHECK", "") + isoplay.MENU_CSS)
+        page.setStyleSheet(isoplay.CSS + isoplay.MENU_CSS)
         try:
             page.show()
             for width, height in ((1120, 630), (640, 400), (800, 500), (1280, 800), (640, 400)):
@@ -85,7 +85,7 @@ class WelcomeLayoutTests(unittest.TestCase):
         owner = WelcomeHarness()
         owner.items[0]["name"] = "Very long movie " + "edition-and-audio-details-" * 12 + ".iso"
         page = isoplay.Player.build_welcome(owner)
-        page.setStyleSheet(isoplay.CSS.replace("CHECK", "") + isoplay.MENU_CSS)
+        page.setStyleSheet(isoplay.CSS + isoplay.MENU_CSS)
         try:
             page.setFixedSize(640, 400)
             page.show()
@@ -101,7 +101,6 @@ class WelcomeLayoutTests(unittest.TestCase):
             rows[1].click()
             self.assertTrue(owner.act_auto_updates.isChecked())
             self.assertIn(owner.act_updates, actions)
-            self.assertEqual(page.findChildren(isoplay.QCheckBox), [])
             for label in page.findChildren(isoplay.ElidedLabel):
                 self.assertLessEqual(label.fontMetrics().horizontalAdvance(label.text()), label.width())
             title = page.findChildren(isoplay.RecentRow)[0].findChild(isoplay.QLabel, "rowtitle")
@@ -157,7 +156,7 @@ class WelcomeLayoutTests(unittest.TestCase):
         owner = WelcomeHarness()
         owner.items = []
         page = isoplay.Player.build_welcome(owner)
-        page.setStyleSheet(isoplay.CSS.replace("CHECK", "") + isoplay.MENU_CSS)
+        page.setStyleSheet(isoplay.CSS + isoplay.MENU_CSS)
         try:
             page.setFixedSize(640, 400)
             page.show()
