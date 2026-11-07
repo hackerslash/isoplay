@@ -91,6 +91,7 @@ class Player(QMainWindow):
 
         self.controls = Overlay(self, clickable=True)
         self.build_controls()
+        self.back = self.build_back()
         self.osd = Overlay(self, clickable=False)
         bubble = QFrame(self.osd, objectName="osd")
         row = QHBoxLayout(bubble)
@@ -228,6 +229,19 @@ class Player(QMainWindow):
         col.addWidget(scroll, 1)
         self.refresh_recent()
         return page
+
+    def build_back(self):
+        """Leave the video and return to the start screen, for people who never find Close Video."""
+        overlay = Overlay(self, clickable=True)
+        button = QPushButton(objectName="back", toolTip=f"Back to the start screen ({MOD}W)",
+                             focusPolicy=Qt.NoFocus, cursor=Qt.PointingHandCursor,
+                             icon=svg_icon("back", 40), iconSize=QSize(20, 20), clicked=self.close_video)
+        button.setAccessibleName("Back to the start screen")
+        button.setFixedSize(40, 40)
+        layout = QVBoxLayout(overlay)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(button)
+        return overlay
 
     def build_controls(self):
         panel = QFrame(self.controls, objectName="panel")
@@ -545,7 +559,8 @@ class Player(QMainWindow):
         area = QRect(self.stack.mapToGlobal(QPoint(0, 0)), self.stack.size())
         w = min(520, area.width() - 40)
         self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 22 - 84, w, 84)
-        self.osd.move(area.left() + 18, area.top() + 18)
+        self.back.setGeometry(area.left() + 18, area.top() + 18, 40, 40)
+        self.osd.move(area.left() + 70, area.top() + 18)
 
     def tick(self):
         now = time.monotonic()
@@ -560,6 +575,7 @@ class Player(QMainWindow):
         hovering = self.controls.isVisible() and self.controls.geometry().contains(pos)
         show = active and on_video and (not playing or now - self.last_move < 2.2 or hovering)
         self.controls.fade(show)
+        self.back.fade(show)
         self.osd.fade(active and on_video and now < self.osd_until)
         hide_cursor = on_video and active and playing and not show and self.frameGeometry().contains(pos)
         if hide_cursor != self.cursor_hidden:

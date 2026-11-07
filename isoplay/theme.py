@@ -48,6 +48,9 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 QSlider::groove:horizontal {{ height: 3px; background: rgba(255,255,255,0.20); border-radius: 1px; }}
 QSlider::sub-page:horizontal {{ background: rgba(255,255,255,0.90); border-radius: 1px; }}
 QSlider::handle:horizontal {{ width: 11px; height: 11px; margin: -4px 0; border-radius: 5px; background: #fff; }}
+#back {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; }}
+#back:hover {{ background: rgba(52,52,56,0.95); }}
+#back:pressed {{ background: rgba(68,68,72,0.95); }}
 #osd {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; }}
 #osd QLabel {{ color: {INK}; font-size: 13px; font-weight: 500; }}
 QToolTip {{ color: {INK}; background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12); padding: 3px 6px; }}
@@ -95,6 +98,7 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
     "link": "M3.9 12A3.1 3.1 0 0 1 7 8.9h4V7H7a5 5 0 0 0 0 10h4v-1.9H7A3.1 3.1 0 0 1 3.9 12zM8 13h8v-2H8v2z"
             "m9-6h-4v1.9h4a3.1 3.1 0 0 1 0 6.2h-4V17h4a5 5 0 0 0 0-10z",
     "more": "M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
+    "back": "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
 }
 
 

@@ -22,7 +22,7 @@ if library.is_file():
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QImage, QRegion
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QToolButton, QWidget
 
 from isoplay import theme
 from isoplay.app import Player
@@ -129,6 +129,18 @@ class WelcomeLayoutTests(unittest.TestCase):
                 meta = row.findChild(ElidedLabel, "rowmeta")
                 self.assertEqual(meta.full_text, origin(source))
                 row.close()
+
+    def test_back_overlay_leaves_the_video(self):
+        class Owner(QWidget):
+            close_video = Mock()
+
+        owner = Owner()
+        overlay = Player.build_back(owner)
+        button = overlay.findChild(QPushButton)
+        self.assertEqual(button.accessibleName(), "Back to the start screen")
+        button.click()
+        self.assertTrue(Owner.close_video.called, "the back control does not leave the video")
+        overlay.close()
 
     def test_preference_rows_toggle_from_the_keyboard(self):
         owner = WelcomeHarness()
