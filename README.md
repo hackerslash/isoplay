@@ -5,8 +5,8 @@
 <h1 align="center">isoplay</h1>
 
 <p align="center">
-  Play Blu-ray and DVD ISOs with their disc menus, from a file or straight from an HTTP link.<br>
-  One self-contained app for macOS, Windows and Linux. Nothing else to install.
+  Stream Blu-ray and DVD ISOs straight from an HTTP link, with their disc menus.<br>
+  Nothing to download first, nothing to extract. Local files work too.
 </p>
 
 <p align="center">
@@ -15,17 +15,27 @@
 
 ![isoplay playing a Blu-ray disc menu](docs/screenshot.png)
 
-## Features
+## Streaming
 
-- **Disc menus**, including Java (BD-J) menus, for DVD5/DVD9, BD25/BD50 and UHD BD66/BD100.
-- **Streams remote images** through a local block cache with parallel read-ahead, so menus stay
-  responsive on slow hosts. Links don't need `.iso` in them; the disc type comes from the contents.
-- **Plays ordinary video** too, local or remote.
-- **Handles ISO9660 Blu-ray containers over HTTP**, including images with multiple disc folders.
-  Starts with the disc with the most video data and streams it with menus, without extracting the image.
-  Use **Discs in This Image** in the track menu to switch to a bonus or special-features disc.
-  Images containing multiple discs show a choice menu inside the player when opened.
-- **Everything bundled:** libVLC with libbluray and libdvdnav, plus a trimmed Java 17 runtime.
+Paste a link and the disc opens where you left the index — isoplay fetches only the blocks
+libbluray and libdvdnav actually read, through a local cache with parallel read-ahead. A 50 GB
+Blu-ray starts in seconds and never lands on disk.
+
+- **Any direct link.** No `.iso` needed in the URL. One ranged read decides what the link is
+  from its first bytes, so extensionless download links work.
+- **Zipped discs**, without unpacking. A disc stored uncompressed in a `.zip` is read in place,
+  wherever its `VIDEO_TS` or `BDMV` folder sits inside the archive.
+- **ISO9660 containers**, which libbluray can't read, are republished as UDF on the fly.
+- **Multi-disc images** open a chooser; switch later from **Discs in This Image** in the track menu.
+
+The host must support HTTP `Range` requests. Images must already be decrypted (no AACS, so no
+retail UHD as-is).
+
+## Also plays
+
+Local ISOs, `VIDEO_TS` and `BDMV` folders, and ordinary video files and links. Disc menus include
+Java (BD-J) menus, for DVD5/DVD9, BD25/BD50 and UHD BD66/BD100. libVLC with libbluray and
+libdvdnav plus a trimmed Java 17 runtime are bundled, so there is nothing else to install.
 
 ## Install
 
@@ -35,10 +45,13 @@
 | Windows x64 | `isoplay-windows-amd64.zip` | SmartScreen: More info, then Run anyway |
 | Linux x64 | `isoplay-linux-x86_64.tar.gz` | Ubuntu 24.04+ or equivalent, X11 or XWayland |
 
+The app checks for new releases on startup and can install them itself, keeping the old version
+until the new one starts successfully. Turn that off in **Options** on the welcome screen.
+
 ## Use
 
-Drop a file or link on the window, press ⌘V / Ctrl+V with a link copied, use ⌘O / ⌘L, or run
-`isoplay <file-or-url>`. Recent items wait on the empty window.
+Paste a link with ⌘V / Ctrl+V, press ⌘L / Ctrl+L to type one, drop a file or link on the window,
+or run `isoplay <file-or-url>`.
 
 | Key | Action |
 |---|---|
@@ -50,25 +63,9 @@ Drop a file or link on the window, press ⌘V / Ctrl+V with a link copied, use �
 | Page Up / Down | previous or next chapter |
 | F | full screen |
 
-If a disc menu fails, choose **Play Main Title Without Menus** from the track button.
-
-## Updates
-
-The downloaded app checks for new stable releases on startup. Choose **Download and Restart**
-to verify, install and open the new version on macOS, Windows or Linux. The previous app is kept
-until the replacement starts successfully, and is restored if startup fails.
-
-Use **Check for Updates…** on the welcome screen or in the track menu (also Help on macOS).
-The welcome screen's **Options** menu contains update checks and playback preferences.
-Automatic checks can be disabled there. Source launches and read-only app folders
-offer the release download page instead of replacing files. Older releases need one manual update
-to v0.1.4 to get the built-in updater.
-
-## Limits
-
-- Images must already be decrypted (no AACS, so no retail UHD as-is).
-- The host has to support HTTP `Range` requests.
-- macOS builds are Apple silicon only and not notarized.
+The track button holds audio and subtitle tracks, **Add Subtitle File…**, the fit modes
+(fit, fill, stretch) and the disc options. If a disc menu fails, choose
+**Play Main Title Without Menus**.
 
 ## Run from source
 
@@ -80,15 +77,13 @@ python3 dev.py path/or/url      # start on a file or link
 python3 dev.py --tests          # run the test suite
 ```
 
-Nothing is installed outside `.venv` and no bundle is built. `python -m isoplay` and
-`python run.py` work too once the dependencies are present.
+Nothing is installed outside `.venv` and no bundle is built.
 
 ```
-isoplay/        app package: media.py streams and probes, app.py is the window,
-                widgets.py and theme.py are the interface, updates*.py the updater
+isoplay/        media.py streams and probes links, disc_image.py projects ISO9660 and zip
+                discs as UDF, app.py is the window, widgets.py and theme.py the interface
 tests/          unittest suite; test_isoplay.py covers the media layer with no Qt
 build.py        produces the self-contained bundle in dist/
-run.py          entry point for a checkout and for the frozen build
 ```
 
 ## Build
