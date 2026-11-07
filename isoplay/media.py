@@ -73,24 +73,24 @@ class Upstream:
     each one costs more than the transfer.
     """
 
-    def __init__(self, url, timeout=30):
+    def __init__(self, url, timeout=30, share=None):
         if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
             raise OSError("only http and https disc images can be streamed")
         self.url, self.timeout = url, timeout
-        self.local = threading.local()
-        self.lock = threading.Lock()
-        self.connections = []
+        # Files on one share reuse each other's connections: one per thread per file ran to hundreds.
+        self.local, self.lock, self.connections = ((share.local, share.lock, share.connections) if share
+                                                   else (threading.local(), threading.Lock(), []))
 
     def _connection(self):
         url = self.url
+        parts = urllib.parse.urlsplit(url)
         held = getattr(self.local, "held", None)
-        if held and held[0] == url:
+        if held and held[0] == parts[:2]:
             return held[1], url
         self._drop()
-        parts = urllib.parse.urlsplit(url)
         factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
         connection = factory(parts.hostname, parts.port, timeout=self.timeout)  # netloc may carry user:pass
-        self.local.held = (url, connection)
+        self.local.held = (parts[:2], connection)
         with self.lock:
             self.connections.append(connection)
         return connection, url
@@ -180,9 +180,9 @@ class Blocks:
     """
     # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
 
-    def __init__(self, url, keep=512, ahead=14, size=None, pool=None):
-        self.url, self.keep, self.ahead = url, keep, ahead
-        self.upstream = Upstream(url)
+    def __init__(self, url, keep=512, ahead=14, size=None, pool=None, bs=None, upstream=None):
+        self.url, self.keep, self.ahead, self.bs = url, keep, ahead, bs or BLOCK
+        self.upstream = upstream or Upstream(url)
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
         self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(ahead + 2), True)
         self.size = self._size() if size is None else size  # a share already knows it
@@ -198,8 +198,8 @@ class Blocks:
             return int(r.headers["Content-Range"].rsplit("/", 1)[1])
 
     def _load(self, i):
-        start = i * BLOCK
-        end = min(start + BLOCK, self.size) - 1
+        start = i * self.bs
+        end = min(start + self.bs, self.size) - 1
         try:
             for attempt in range(3):
                 try:
@@ -234,11 +234,11 @@ class Blocks:
 
     def read(self, pos, n):
         end = min(pos + n, self.size)
-        for i in range(pos // BLOCK, (end + BLOCK - 1) // BLOCK):
+        for i in range(pos // self.bs, (end + self.bs - 1) // self.bs):
             self.block(i)  # queue the whole span before waiting on any of it
         out = bytearray()
         while n > 0 and pos < self.size:
-            i, off = divmod(pos, BLOCK)
+            i, off = divmod(pos, self.bs)
             b = self.block(i).result()[off:off + n]
             out += b
             pos += len(b)
@@ -246,10 +246,10 @@ class Blocks:
         return bytes(out)
 
     def prefetch(self, pos):
-        first = pos // BLOCK
+        first = pos // self.bs
         # Queue the requested block before its neighbours, and stop once enough is in flight:
         # speculative blocks must never delay one a reader is already waiting on.
-        for i in range(first, min(first + self.ahead + 1, (self.size + BLOCK - 1) // BLOCK)):
+        for i in range(first, min(first + self.ahead + 1, (self.size + self.bs - 1) // self.bs)):
             if i > first and len(self.pending) >= self.ahead:
                 return
             self.block(i)
@@ -368,8 +368,12 @@ class LocalImage(Served):
         self.fp.close()
 
 
-SHARE_AHEAD = 22  # 24 connections: measured as the most a share gives before it throttles
-SHARE_KEEP = 128  # blocks per file, so ~64 MiB on whichever stream is playing
+# A share request waits ~0.5-1.3 s before its first byte, then runs at ~5 MB/s, so small
+# blocks spend their connection waiting: 512 KiB gave 0.7 MB/s each, 2 MiB 1.4 and 8 MiB 3.
+SHARE_BLOCK = 4 << 20
+SHARE_AHEAD = 6  # blocks in flight per file: ~12 MB/s, past a UHD peak
+SHARE_CONNECTIONS = 24  # the most a share gave before it throttled; small disc files use them all
+SHARE_KEEP = 24  # blocks per file, so ~96 MiB on whichever stream is playing
 
 
 class Share(Served):
@@ -380,8 +384,10 @@ class Share(Served):
     """
 
     def __init__(self, files):
-        self.pool = ThreadPoolExecutor(SHARE_AHEAD + 2)
-        self.streams = {path: RemoteFile(link, size, self.pool) for path, (link, size) in files.items()}
+        self.pool = ThreadPoolExecutor(SHARE_CONNECTIONS)
+        hub = Upstream(next(iter(files.values()))[0])
+        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub))
+                        for path, (link, size) in files.items()}
         self._serve()
 
     def close(self):
@@ -394,8 +400,9 @@ class Share(Served):
 class RemoteFile(io.RawIOBase):
     """One file on a share, read through its own block cache off the share's connection pool."""
 
-    def __init__(self, url, size, pool=None):
-        self.cache = Blocks(url, keep=SHARE_KEEP, ahead=SHARE_AHEAD, size=size, pool=pool)
+    def __init__(self, url, size, pool=None, upstream=None):
+        self.cache = Blocks(url, keep=SHARE_KEEP, ahead=SHARE_AHEAD, size=size, pool=pool, bs=SHARE_BLOCK,
+                            upstream=upstream)
         self.size, self.pos = size, 0
 
     def readable(self):
@@ -413,7 +420,7 @@ class RemoteFile(io.RawIOBase):
 
     def want(self, pos, size):
         """Queue the blocks under a span without waiting for them."""
-        for i in range(pos // BLOCK, (min(pos + size, self.size) + BLOCK - 1) // BLOCK):
+        for i in range(pos // self.cache.bs, (min(pos + size, self.size) + self.cache.bs - 1) // self.cache.bs):
             self.cache.block(i)
 
     def pread(self, pos, size):
