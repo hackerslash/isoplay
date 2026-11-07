@@ -24,6 +24,7 @@
 - **Handles ISO9660 Blu-ray containers over HTTP**, including images with multiple disc folders.
   Starts with the disc with the most video data and streams it with menus, without extracting the image.
   Use **Discs in This Image** in the track menu to switch to a bonus or special-features disc.
+  Images containing multiple discs show a choice menu inside the player when opened.
 - **Everything bundled:** libVLC with libbluray and libdvdnav, plus a trimmed Java 17 runtime.
 
 ## Install
@@ -50,6 +51,17 @@ Drop a file or link on the window, press ⌘V / Ctrl+V with a link copied, use �
 | F | full screen |
 
 If a disc menu fails, choose **Play Main Title Without Menus** from the track button.
+
+## Updates
+
+The downloaded app checks for new stable releases on startup. Choose **Download and Restart**
+to verify, install and open the new version on macOS, Windows or Linux. The previous app is kept
+until the replacement starts successfully, and is restored if startup fails.
+
+Use **Check for Updates…** on the welcome screen or in the track menu (also Help on macOS).
+Automatic checks can be disabled on the welcome screen. Source launches and read-only app folders
+offer the release download page instead of replacing files. Older releases need one manual update
+to v0.1.4 to get the built-in updater.
 
 ## Limits
 

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """isoplay: play Blu-ray and DVD images with their menus, and ordinary video, from files or links."""
+import sys
+
+# Updater helpers must run before Qt/VLC load DLLs from an installation being replaced.
+if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--apply-update":
+    from updates import apply_update
+    raise SystemExit(apply_update(sys.argv[2]))
+
 import json
 import os
 import re
-import sys
 import tempfile
 import threading
 import urllib.parse
@@ -14,6 +20,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from disc_image import project_iso9660
+import updates
 
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 VLC_DIR = BASE / "vlc"
@@ -51,8 +58,9 @@ from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
+from update_ui import UpdateUI  # noqa: E402
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 UA = "Mozilla/5.0 isoplay"
 
 
@@ -495,6 +503,53 @@ class Bridge(QObject):
     event = Signal(str)
 
 
+def disc_label(root):
+    return root.strip("/").replace("_", " ").title() or "Disc"
+
+
+class DiscChooser(QWidget):
+    """An opening menu within the player, only for images with multiple discs."""
+    selected = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self):
+        super().__init__(objectName="welcome")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(32, 32, 32, 32)
+        outer.addStretch()
+        holder = QHBoxLayout()
+        holder.addStretch()
+        content = QWidget()
+        content.setMaximumWidth(500)
+        content.setMinimumWidth(360)
+        column = QVBoxLayout(content)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(14)
+        column.addWidget(QLabel("Choose a Disc", objectName="appname"))
+        column.addWidget(QLabel("This image contains more than one disc.", objectName="muted"))
+        self.choices = QVBoxLayout()
+        self.choices.setSpacing(10)
+        column.addLayout(self.choices)
+        cancel = QPushButton("Cancel", objectName="link", cursor=Qt.PointingHandCursor)
+        cancel.clicked.connect(self.cancelled)
+        column.addWidget(cancel, alignment=Qt.AlignLeft)
+        holder.addWidget(content)
+        holder.addStretch()
+        outer.addLayout(holder)
+        outer.addStretch()
+
+    def set_discs(self, roots):
+        while self.choices.count():
+            item = self.choices.takeAt(0)
+            item.widget().deleteLater()
+        for root in roots:
+            button = QPushButton(disc_label(root), objectName="action", cursor=Qt.PointingHandCursor,
+                                 icon=svg_icon("disc", 32), iconSize=QSize(24, 24))
+            button.setMinimumHeight(56)
+            button.clicked.connect(lambda _=False, selected=root: self.selected.emit(selected))
+            self.choices.addWidget(button)
+
+
 class Player(QMainWindow):
     NAV = {Qt.Key_Up: vlc.NavigateMode.up, Qt.Key_Down: vlc.NavigateMode.down,
            Qt.Key_Left: vlc.NavigateMode.left, Qt.Key_Right: vlc.NavigateMode.right,
@@ -518,6 +573,8 @@ class Player(QMainWindow):
         self.mp.video_set_mouse_input(True)
         self.disc = self.proxy = self.current = None
         self.disc_root = None
+        self.ask_disc = False
+        self.pending_disc = None
         self.token = 0
         self.use_menus = self.remaining = True
         self.last_pos, self.last_move = QPoint(), 0.0
@@ -534,6 +591,7 @@ class Player(QMainWindow):
         ev.event_attach(vlc.EventType.MediaPlayerBuffering,
                         lambda e: self.bridge.event.emit(f"buffer:{e.u.new_cache:.0f}"))
 
+        self.updater = UpdateUI(self, __version__, self.settings, lambda: [self.current] if self.current else [])
         self.build_actions()
         self.stack = QStackedWidget()
         self.welcome = self.build_welcome()
@@ -542,6 +600,10 @@ class Player(QMainWindow):
         self.video.setStyleSheet("background:#000")
         self.video.setAttribute(Qt.WA_NativeWindow)
         self.stack.addWidget(self.video)
+        self.chooser = DiscChooser()
+        self.chooser.selected.connect(self.choose_disc)
+        self.chooser.cancelled.connect(self.close_video)
+        self.stack.addWidget(self.chooser)
         self.setCentralWidget(self.stack)
         wid = int(self.video.winId())
         {"darwin": self.mp.set_nsobject, "win32": self.mp.set_hwnd}.get(sys.platform, self.mp.set_xwindow)(wid)
@@ -564,6 +626,7 @@ class Player(QMainWindow):
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
+        QTimer.singleShot(3000, self.updater.automatic_check)
 
     # --- structure ---------------------------------------------------------------------------------
 
@@ -588,12 +651,19 @@ class Player(QMainWindow):
         self.act_prev = self.action("Previous Chapter", None, lambda: self.step(-1))
         self.act_next = self.action("Next Chapter", None, lambda: self.step(1))
         self.act_full = self.action("Enter Full Screen", "Ctrl+Meta+F" if MAC else "F11", self.toggle_full)
+        self.act_updates = self.action("Check for Updates…", None, lambda: self.updater.check(manual=True))
+        self.act_auto_updates = self.action("Check for Updates Automatically", None,
+                                           lambda: self.settings.setValue("updates/automatic", self.act_auto_updates.isChecked()),
+                                           checkable=True)
+        self.act_auto_updates.setChecked(self.settings.value("updates/automatic", True, type=bool))
+        self.updater.busy_changed.connect(lambda busy: self.act_updates.setEnabled(not busy))
         if MAC:
             bar = self.menuBar()
             for title, acts in (("File", (self.act_open, self.act_url, self.act_paste, None, self.act_close)),
                                 ("Playback", (self.act_pause, None, self.act_prev, self.act_next, None,
                                               self.act_discmenu, self.act_main, None, self.act_menus)),
-                                ("Video", (self.act_full,))):
+                                ("Video", (self.act_full,)),
+                                ("Help", (self.act_updates, self.act_auto_updates))):
                 m = bar.addMenu(title)
                 for a in acts:
                     m.addAction(a) if a else m.addSeparator()
@@ -665,6 +735,15 @@ class Player(QMainWindow):
         menus.toggled.connect(self.menus_changed)
         self.act_menus.toggled.connect(menus.setChecked)
         col.addWidget(menus)
+        automatic = QCheckBox("Check for updates automatically", cursor=Qt.PointingHandCursor)
+        automatic.setChecked(self.act_auto_updates.isChecked())
+        automatic.toggled.connect(self.act_auto_updates.setChecked)
+        automatic.toggled.connect(lambda value: self.settings.setValue("updates/automatic", value))
+        self.act_auto_updates.toggled.connect(automatic.setChecked)
+        col.addWidget(automatic)
+        update_link = QPushButton("Check for Updates…", objectName="link", cursor=Qt.PointingHandCursor)
+        update_link.clicked.connect(lambda: self.updater.check(manual=True))
+        col.addWidget(update_link, alignment=Qt.AlignLeft)
         self.refresh_recent()
         return page
 
@@ -805,6 +884,8 @@ class Player(QMainWindow):
             self.proxy = None
         self.current = self.disc = None
         self.disc_root = None
+        self.ask_disc = False
+        self.pending_disc = None
         self.setWindowTitle("isoplay")
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
@@ -815,6 +896,7 @@ class Player(QMainWindow):
             return
         self.close_video()
         self.current = src
+        self.ask_disc = disc_root is None
         self.use_menus = self.act_menus.isChecked() if menus is None else menus
         self.setWindowTitle(display_name(src))
         self.stack.setCurrentWidget(self.video)
@@ -840,6 +922,13 @@ class Player(QMainWindow):
             return
         mrl, self.disc, self.proxy = result
         self.disc_root = self.proxy.view.disc_root if self.proxy and self.proxy.view else None
+        if self.ask_disc and self.proxy and self.proxy.view and len(self.proxy.view.discs) > 1:
+            self.ask_disc = False
+            self.pending_disc = (token, result)
+            self.chooser.set_discs(self.proxy.view.discs)
+            self.stack.setCurrentWidget(self.chooser)
+            self.osd_until = 0
+            return
         self.remember(self.current, self.disc)
         media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
         media.add_option(f":http-user-agent={UA}")
@@ -854,6 +943,17 @@ class Player(QMainWindow):
                    sticky=True, busy=True)
         self.menu_btn.setVisible(bool(self.disc) and self.use_menus)
         self.act_discmenu.setEnabled(bool(self.disc) and self.use_menus)
+
+    def choose_disc(self, root):
+        if not self.pending_disc:
+            return
+        token, result = self.pending_disc
+        self.pending_disc = None
+        if root == self.disc_root:
+            self.stack.setCurrentWidget(self.video)
+            self.start(token, result)
+        else:
+            self.play(self.current, menus=self.use_menus, disc_root=root)
 
     def on_event(self, name):
         if name.startswith("buffer:"):
@@ -930,6 +1030,8 @@ class Player(QMainWindow):
             menu.addAction(self.act_discmenu)
             menu.addAction(self.act_main)
             menu.addAction(self.act_menus)
+        menu.addSeparator()
+        menu.addAction(self.act_updates)
         menu.exec(self.tracks_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)))
 
     def add_disc_choices(self, menu):
@@ -938,7 +1040,7 @@ class Player(QMainWindow):
             return
         choices = menu.addMenu("Discs in This Image")
         for root in view.discs:
-            label = root.strip("/").replace("_", " ").title() or "Disc"
+            label = disc_label(root)
             action = choices.addAction(label)
             action.setCheckable(True)
             action.setChecked(root == self.disc_root)
@@ -1084,15 +1186,28 @@ def check():
 
 
 def main():
+    args = sys.argv[1:]
+    result_file = None
+    if "--update-result" in args:
+        index = args.index("--update-result")
+        result_file = args[index + 1]
+        del args[index:index + 2]
     if "--check" in sys.argv:
-        return check()
+        check()
+        if result_file:
+            updates.finish_update(result_file)
+        return
     app = QApplication(sys.argv)
     app.setApplicationName("isoplay")
     app.setWindowIcon(svg_icon((BASE / "assets/icon.svg").read_bytes(), 256))
     w = Player()
     w.show()
-    if len(sys.argv) > 1:
-        w.play(sys.argv[1])
+    if args:
+        w.play(args[0])
+    if result_file:
+        w.raise_()
+        w.activateWindow()
+        w.updater.complete_restart(result_file)
     sys.exit(app.exec())
 
 

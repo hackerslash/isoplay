@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 import pycdlib
@@ -65,6 +65,37 @@ def fixture(large=False, udf=False, nested=True):
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_opening_menu_only_for_multiple_discs(self):
+        for roots in (("/FEATURE", "/BONUS"), ("",), None):
+            with self.subTest(roots=roots):
+                view = SimpleNamespace(discs=roots, disc_root=roots[0]) if roots else None
+                proxy = SimpleNamespace(view=view) if roots else None
+                player = SimpleNamespace(token=1, ask_disc=True, current="image.iso", use_menus=True,
+                                         chooser=Mock(), stack=Mock(), mp=Mock(), vlc=Mock(),
+                                         remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock())
+                result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy)
+                isoplay.Player.start(player, 1, result)
+                if roots and len(roots) > 1:
+                    player.mp.play.assert_not_called()
+                    player.chooser.set_discs.assert_called_once_with(roots)
+                    player.stack.setCurrentWidget.assert_called_once_with(player.chooser)
+                    self.assertEqual(player.pending_disc, (1, result))
+                    player.play = Mock()
+                    isoplay.Player.choose_disc(player, "/BONUS")
+                    player.play.assert_called_once_with("image.iso", menus=True, disc_root="/BONUS")
+                else:
+                    player.chooser.set_discs.assert_not_called()
+                    player.mp.play.assert_called_once()
+
+    def test_choosing_default_disc_starts_without_asking_again(self):
+        result = ("http://127.0.0.1/disc.iso", "bluray", None)
+        player = SimpleNamespace(pending_disc=(1, result), disc_root="/FEATURE", stack=Mock(),
+                                 video=object(), start=Mock(), play=Mock())
+        isoplay.Player.choose_disc(player, "/FEATURE")
+        player.start.assert_called_once_with(1, result)
+        player.play.assert_not_called()
+        self.assertIsNone(player.pending_disc)
+
     def test_select_bonus_disc_and_return_to_feature(self):
         with fixture() as fp:
             cache = FileCache(fp)
