@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from disc_image import project_iso9660
+
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 VLC_DIR = BASE / "vlc"
 LIB = {"darwin": "lib/libvlc.dylib", "win32": "libvlc.dll"}.get(sys.platform, "lib/libvlc.so.5")
@@ -50,7 +52,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMenu, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 UA = "Mozilla/5.0 isoplay"
 
 
@@ -75,6 +77,7 @@ class RangeCache:
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
         self.pool = ThreadPoolExecutor(ahead + 2)
         self.size = self._size()
+        self.view = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.server.daemon_threads = True
         self.server.handle_error = lambda *a: None  # players drop connections on every seek
@@ -136,9 +139,17 @@ class RangeCache:
             n -= len(b)
         return bytes(out)
 
+    def prefetch(self, pos):
+        first = pos // BLOCK
+        # Queue the requested block before its neighbours.
+        for i in range(first, min(first + self.ahead + 1, (self.size + BLOCK - 1) // BLOCK)):
+            self.block(i)
+
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+        if self.view:
+            self.view.close()
         self.pool.shutdown(wait=False, cancel_futures=True)
 
     def _handler(self):
@@ -152,7 +163,8 @@ class RangeCache:
                 pass
 
             def _head(self):
-                start, end, partial = 0, cache.size - 1, False
+                size = cache.view.size if cache.view else cache.size
+                start, end, partial = 0, size - 1, False
                 m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
                 if m and (m[1] or m[2]):
                     partial = True
@@ -160,16 +172,16 @@ class RangeCache:
                         start = int(m[1])
                         end = min(int(m[2]), end) if m[2] else end
                     else:
-                        start = max(0, cache.size - int(m[2]))
-                if start >= cache.size:
+                        start = max(0, size - int(m[2]))
+                if start >= size or end < start:
                     self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{cache.size}")
+                    self.send_header("Content-Range", f"bytes */{size}")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return None
                 self.send_response(206 if partial else 200)
                 if partial:
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{cache.size}")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("Content-Length", str(end - start + 1))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Content-Type", "application/octet-stream")
@@ -187,6 +199,11 @@ class RangeCache:
                 first = pos // BLOCK
                 try:
                     while pos <= end:
+                        if cache.view:
+                            chunk = cache.view.read(pos, min(BLOCK, end - pos + 1))
+                            self.wfile.write(chunk)
+                            pos += len(chunk)
+                            continue
                         i, off = divmod(pos, BLOCK)
                         if i > first:  # reader is streaming, not probing: keep blocks in flight
                             for j in range(i + 1, min(i + cache.ahead, last) + 1):
@@ -253,11 +270,20 @@ def prepare(src):
     if ext in VIDEO_EXT or (ext not in DISC_EXT and not sniff(src)):
         return src, None, None
     proxy = RangeCache(src)
-    data = proxy.read(0, BLOCK)
-    if not iso_signature(data):
+    try:
+        data = proxy.read(0, BLOCK)
+        if not iso_signature(data):
+            proxy.close()
+            return src, None, None
+        kind = disc_kind(data)
+        udf = any(data[s * 2048 + 1:s * 2048 + 6] in (b"BEA01", b"NSR02", b"NSR03")
+                  for s in range(16, 32))
+        if kind == "bluray" and not udf:
+            proxy.view = project_iso9660(proxy)
+        return proxy.mrl, kind, proxy
+    except Exception:
         proxy.close()
-        return src, None, None
-    return proxy.mrl, disc_kind(data), proxy
+        raise
 
 
 def fmt(ms):
