@@ -24,7 +24,8 @@ def is_url(src):
     return src.split("://", 1)[0].lower() in ("http", "https", "ftp")
 
 
-BLOCK = 4 << 20
+BLOCK = 512 << 10
+SNIFF_DISC = 4 << 20  # how far in to look for BDMV/VIDEO_TS, independent of the block size
 REDIRECTS = {301, 302, 303, 307, 308}
 
 
@@ -113,10 +114,15 @@ class RangeCache:
     libbluray/dvdnav seek constantly and each upstream request costs ~1 s, so menus need the cache;
     one upstream connection (~1.5 MB/s on worker hosts) is too slow for Blu-ray, so playback needs
     several blocks in flight at once.
-    """
-    # ponytail: in-memory LRU (keep*4 MiB); switch to a disk cache if RAM gets tight
 
-    def __init__(self, url, keep=64, ahead=6):
+    Block size is a latency/throughput trade. Opening an encrypted DVD makes libdvdcss probe
+    sectors scattered over the whole image, and each probe waits for a whole block: on a host
+    that gives ~85 KB/s per connection a 4 MiB block is ~50 s of stall, a 512 KiB one ~7 s.
+    Sequential throughput is kept up by holding more blocks in flight instead.
+    """
+    # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
+
+    def __init__(self, url, keep=512, ahead=14):
         self.url, self.keep, self.ahead = url, keep, ahead
         self.upstream = Upstream(url)
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
@@ -174,6 +180,9 @@ class RangeCache:
             return self.pending[i]
 
     def read(self, pos, n):
+        end = min(pos + n, self.size)
+        for i in range(pos // BLOCK, (end + BLOCK - 1) // BLOCK):
+            self.block(i)  # queue the whole span before waiting on any of it
         out = bytearray()
         while n > 0 and pos < self.size:
             i, off = divmod(pos, BLOCK)
@@ -418,7 +427,7 @@ def prepare(src, disc_root=None):
         if ext in VIDEO_EXT:
             return (src, *PLAIN)
         with open(p, "rb") as f:
-            data = f.read(BLOCK)
+            data = f.read(SNIFF_DISC)
         if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
             return _project(LocalImage(p), lambda image: project_zip(image, root=disc_root))
         if not iso_signature(data):
@@ -443,7 +452,7 @@ def prepare(src, disc_root=None):
         if found == "zip":
             proxy.view = project_zip(proxy, root=disc_root)
             return _streamed(proxy, proxy.view.kind)
-        data = proxy.read(0, BLOCK)
+        data = proxy.read(0, SNIFF_DISC)
         kind = disc_kind(data)
         if kind == "bluray" and not has_udf(data):
             proxy.view = project_iso9660(proxy, root=disc_root)
