@@ -24,7 +24,8 @@ Blu-ray starts in seconds and never lands on disk.
 - **Any direct link.** No `.iso` needed in the URL. One ranged read decides what the link is
   from its first bytes, so extensionless download links work.
 - **Zipped discs**, without unpacking. A disc stored uncompressed in a `.zip` is read in place,
-  wherever its `VIDEO_TS` or `BDMV` folder sits inside the archive.
+  wherever its `VIDEO_TS` or `BDMV` folder sits inside the archive — including a whole `.iso`
+  stored inside it, which is opened in turn with its menus intact.
 - **ISO9660 containers**, which libbluray can't read, are republished as UDF on the fly.
 - **Everything else playable.** HD DVD, Video CD, DVD-Audio and plain rips of media files have no
   menu format libVLC can navigate, so their main title is served as itself — numbered `.EVO`,
@@ -33,6 +34,10 @@ Blu-ray starts in seconds and never lands on disk.
 
 The host must support HTTP `Range` requests. Images must already be decrypted (no AACS, so no
 retail UHD as-is).
+
+Menus come from the engine that can navigate the format: libdvdnav for DVD, libbluray for
+Blu-ray. HD DVD Advanced Content and DVD-Audio have no open-source navigator in existence, so
+those play their main title without menus.
 
 ## Also plays
 

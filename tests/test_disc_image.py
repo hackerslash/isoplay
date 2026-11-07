@@ -186,6 +186,15 @@ class TitleLiftTests(unittest.TestCase):
         self.assertEqual((kind, root), ("dvd", "Rip"))
         self.assertEqual(mrl, "http://127.0.0.1:12345/disc.iso")
 
+    def test_a_local_iso9660_bluray_gets_its_menus_like_a_linked_one(self):
+        with fixture(nested=False) as fp:
+            mrl, kind, proxy, _, _ = self._local("movie.iso", fp)
+        self.assertEqual((kind, mrl), ("bluray", "http://127.0.0.1:12345/disc.iso"))
+        projected = pycdlib.PyCdlib()
+        projected.open_fp(CacheFile(proxy.view))
+        self.addCleanup(projected.close)
+        self.assertTrue(projected.has_udf())  # libbluray can read this, the file on disk it cannot
+
     def test_a_lifted_title_keeps_its_name_so_libvlc_picks_the_demuxer(self):
         with iso_fixture({"/HVDVD_TS/HV001M01.EVO": b"feature"}) as fp:
             mrl, kind, proxy, _, _ = self._local("movie.iso", fp)
@@ -200,6 +209,46 @@ class TitleLiftTests(unittest.TestCase):
         with zip_fixture(["A/VIDEO_TS.IFO", "B/BDMV/index.bdmv"]) as fp:
             picked = project_zip(FileCache(fp), root="B")
         self.assertEqual((picked.kind, picked.disc_root), ("bluray", "B"))
+
+
+class NestedImageTests(unittest.TestCase):
+    """A release that ships the disc as an image inside the archive still gets its engine."""
+
+    def zipped(self, name, fp):
+        fp.seek(0)
+        payload = fp.read()
+        outer = tempfile.TemporaryFile()
+        with zipfile.ZipFile(outer, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("readme.nfo", b"release notes")
+            z.writestr(name, payload)
+        return outer
+
+    def test_a_bluray_iso_inside_a_zip_is_republished_as_udf(self):
+        with fixture(nested=False) as inner, self.zipped("Movie/movie.iso", inner) as fp:
+            view = project_zip(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual(view.kind, "bluray")
+            projected = pycdlib.PyCdlib()
+            projected.open_fp(CacheFile(view))
+            self.addCleanup(projected.close)
+            self.assertIsNotNone(projected.get_record(udf_path="/BDMV/index.bdmv"))
+
+    def test_a_udf_image_inside_a_zip_is_served_whole_so_its_menus_survive(self):
+        with fixture(nested=False, udf=True) as inner, self.zipped("movie.iso", inner) as fp:
+            inner.seek(0)
+            raw = inner.read()
+            view = project_zip(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual((view.kind, view.name, view.size), ("bluray", "movie.iso", len(raw)))
+            self.assertEqual(view.read(0, len(raw)), raw)
+
+    def test_an_image_of_something_unnavigable_still_lifts_its_title(self):
+        with iso_fixture({"/HVDVD_TS/HV001M01.EVO": b"feature"}) as inner, \
+                self.zipped("hd.iso", inner) as fp:
+            view = project_zip(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual((view.kind, view.name), (None, "HV001M01.evo"))
+            self.assertEqual(view.read(0, 7), b"feature")
 
 
 class ProjectionTests(unittest.TestCase):

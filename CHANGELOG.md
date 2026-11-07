@@ -6,6 +6,10 @@
   with no menu format libVLC can navigate, the main title is served as itself, numbered
   `.EVO`/`.VOB`/`.DAT` parts joined back into one stream
 - Local `.zip` discs no longer have to be extracted first; they open like a linked one
+- A disc image stored inside a `.zip` is opened in turn, so a release that ships `movie.iso`
+  in an archive keeps its menus instead of being refused
+- Local ISO9660 Blu-rays get their menus too: they are republished as UDF like a linked one
+  rather than handed to libbluray, which cannot read ISO9660
 - Transport controls no longer stay pinned over a disc menu: a still menu reports "not playing",
   which the auto-hide rule read as "keep the controls up"
 

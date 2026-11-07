@@ -14,7 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
-from isoplay.disc_image import MEDIA_EXT, project_iso9660, project_media, project_zip
+from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature,  # noqa: F401 - re-exported
+                                 project_iso9660, project_media, project_zip)
 
 UA = "Mozilla/5.0 isoplay"
 
@@ -318,19 +319,6 @@ def normalize(src):
     return src
 
 
-def iso_signature(data):
-    """ISO 9660 (CD001) or UDF (BEA01) volume descriptor at sector 16: DVD5/9, BD25/50/66/100."""
-    return data[32769:32774] in (b"CD001", b"BEA01")
-
-
-def disc_kind(data):
-    if b"BDMV" in data:
-        return "bluray"
-    if b"VIDEO_TS" in data:
-        return "dvd"
-    return None
-
-
 def _not_a_page(headers, head=b""):
     if (headers.get_content_type() in ("text/html", "application/xhtml+xml")
             or head.lstrip()[:5].lower() in (b"<!doc", b"<html")):
@@ -436,8 +424,14 @@ def prepare(src, disc_root=None):
         if not iso_signature(data):
             return (src, *PLAIN)
         kind = disc_kind(data)
-        if kind is None:  # HD DVD, VCD, DVD-Audio, a rip of loose files: libVLC can't look inside
-            lifted = _project(LocalImage(p), project_media)
+        # A DVD, or a Blu-ray already in UDF, opens best straight off disk; the rest need projecting
+        project = None
+        if kind == "bluray" and not has_udf(data):
+            project = lambda image: project_iso9660(image, root=disc_root)  # noqa: E731
+        elif kind is None:  # HD DVD, VCD, DVD-Audio, a rip of loose files
+            project = project_media
+        if project:
+            lifted = _project(LocalImage(p), project)
             if lifted:
                 return lifted
         return src, kind, None, (), None
@@ -450,10 +444,8 @@ def prepare(src, disc_root=None):
             proxy.view = project_zip(proxy, root=disc_root)
             return _streamed(proxy, proxy.view.kind)
         data = proxy.read(0, BLOCK)
-        udf = any(data[s * 2048 + 1:s * 2048 + 6] in (b"BEA01", b"NSR02", b"NSR03")
-                  for s in range(16, 32))
         kind = disc_kind(data)
-        if kind == "bluray" and not udf:
+        if kind == "bluray" and not has_udf(data):
             proxy.view = project_iso9660(proxy, root=disc_root)
         elif kind is None:
             proxy.view = project_media(proxy)

@@ -174,6 +174,23 @@ class _ExtentFile(io.RawIOBase):
         return bytes(out)
 
 
+def iso_signature(data):
+    """ISO 9660 (CD001) or UDF (BEA01) volume descriptor at sector 16: DVD5/9, BD25/50/66/100."""
+    return data[32769:32774] in (b"CD001", b"BEA01")
+
+
+def has_udf(data):
+    return any(data[s * 2048 + 1:s * 2048 + 6] in (b"BEA01", b"NSR02", b"NSR03") for s in range(16, 32))
+
+
+def disc_kind(data):
+    if b"BDMV" in data:
+        return "bluray"
+    if b"VIDEO_TS" in data:
+        return "dvd"
+    return None
+
+
 class _FileView(io.RawIOBase):
     """One title lifted out of an image and served as itself, for what libVLC can't navigate."""
 
@@ -263,6 +280,29 @@ def _walk_iso9660(cache, skip_udf=False):
         return files, directories
     finally:
         original.close()
+
+
+IMAGE_EXT = {".iso", ".img", ".udf"}
+
+
+def _nested_image(cache, files):
+    """The biggest disc image stored inside the archive, routed to the engine that can navigate it.
+
+    An image served as itself keeps its menus: libdvdread reads ISO9660 and libbluray reads
+    UDF straight off the stream. Only what neither can navigate is rewritten.
+    """
+    images = {path: spans for path, spans in files.items() if _ext(path) in IMAGE_EXT}
+    if not images:
+        return None
+    path = max(images, key=lambda p: (sum(length for _, length in images[p]), p))
+    inner = _FileView(_ExtentFile(cache, images[path]), path.rpartition("/")[2])
+    head = inner.read(0, 4 << 20)
+    if not iso_signature(head):
+        return None
+    inner.kind = disc_kind(head)
+    if inner.kind == "bluray" and not has_udf(head):
+        return project_iso9660(inner)  # libbluray can't read ISO9660; republish it as UDF
+    return project_media(inner) if inner.kind is None else inner
 
 
 def project_media(cache):
@@ -367,7 +407,8 @@ def project_zip(cache, root=None):
         names = archive.namelist()
     found = _zip_discs(names)
     if not found:
-        view = _title_view(cache, {name: [span] for name, span in spans.items()})
+        inside = {name: [span] for name, span in spans.items()}
+        view = _nested_image(cache, inside) or _title_view(cache, inside)
         if view:
             return view
         if any(_ext(name) in MEDIA_EXT for name in names):
