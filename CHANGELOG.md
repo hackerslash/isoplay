@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Reopening a disc skips most of its round trips: what a disc was opened with is kept in a disk
+  cache, 2 GB by default and sized (or turned off and cleared) under **Options → Disk Cache**.
+  Read-ahead of the film itself isn't kept, so it can't flush out the menus
+- Read-ahead finds how many connections a host takes, as TCP finds its window: one more per round
+  while there is more to fetch, halved on a 429 or a failure, up to 10 for a link
+- A Blu-ray whose BD-J menu libbluray can't run, which froze at the end of a feature-length title
+  the moment it opened, now plays its main title instead, and says so
+- Buffering that keeps coming back says the connection is too slow for the video, and how fast it
+  is arriving, instead of only spinning
+- Quitting no longer waits up to 30 s for a download in flight; closing wakes it straight away
+- Opening a link costs one request fewer: the probe's answer already carries the file's size
+- A share's files share one 256 MiB memory budget, instead of each holding up to 192 MiB
+- Bundles are ~20 MB smaller: QtPdf, QtQuick, QtQml and the virtual keyboard are left out, and the
+  build now starts the window offscreen to prove what's left still draws it
+
 ## 0.3.2
 
 - HD DVD, Video CD, DVD-Audio and plain rips of media files now play from an ISO or a `.zip`:
