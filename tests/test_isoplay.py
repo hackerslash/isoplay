@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
 from isoplay import media
-from isoplay.media import RangeCache, disc_kind, fmt, iso_signature, prepare, suffix
+from isoplay.media import RangeCache, Upstream, disc_kind, fmt, iso_signature, prepare, suffix
 
 assert os.path.isfile(os.environ["SSL_CERT_FILE"])  # https links fail without a trust store
 assert disc_kind(b"..\x08BDMV..") == "bluray"
@@ -49,6 +49,11 @@ class Up(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/missing":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         a, b = map(int, re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers["Range"]).groups())
         body = DATA[a:b + 1]
         self.send_response(206)
@@ -105,6 +110,17 @@ for i in range(12):  # one size probe plus twelve block fetches
     c.read(i * 1000, 10)
 assert len(accepted) <= 4, f"13 range requests opened {len(accepted)} connections"
 c.close()
+
+try:
+    Upstream(f"http://127.0.0.1:{alive.server_port}/missing").get(0, 0)
+    raise AssertionError("expected the 404 to surface")
+except OSError as e:
+    assert "404" in str(e), e
+try:
+    RangeCache("ftp://example.invalid/x.iso")
+    raise AssertionError("expected ftp to be rejected")
+except OSError as e:
+    assert "http" in str(e), e
 alive.shutdown()
 
 media.BLOCK = 1 << 20

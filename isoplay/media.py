@@ -93,6 +93,8 @@ class Upstream:
                 continue
             if response.will_close:
                 self._drop()
+            if response.status >= 400:  # urlopen raised these; http.client hands back the error page
+                raise OSError(f"the server answered {response.status} {response.reason}")
             return _Body(response.status, response.headers, data)
         raise OSError("the server kept redirecting the disc image")
 
