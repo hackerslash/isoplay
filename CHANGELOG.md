@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - HD DVD, Video CD, DVD-Audio and plain rips of media files now play from an ISO or a `.zip`:
   with no menu format libVLC can navigate, the main title is served as itself, numbered
@@ -25,6 +25,15 @@
   which the auto-hide rule read as "keep the controls up"
 - Java (BD-J) menus that draw text no longer stay black: libbluray looks for the Lucida fonts the
   JDK stopped shipping in 11, so the bundled runtime now carries DejaVu under those names
+- Streaming stays within what hosts allow: read-ahead goes out as a few 4 MiB requests, about
+  20 s ahead of the player, and backs off on a 429, where a dozen small requests at once got a
+  CDN to refuse the connection outright. Discs inside a zip or ISO get read-ahead again
+- A multi-disc zip opens in seconds: only the chosen disc's headers are read, merged and in
+  parallel, instead of every entry's one round trip at a time (~17 min for a 1007-file season)
+- WebDAV discs start about twice as fast: folders are listed in parallel, the disc's small files
+  are fetched ahead, and the player never queues behind that speculative traffic
+- Known: some studios' BD-J menus (Disney 3D among them) don't run on libbluray at all; use
+  **Play Main Title Without Menus** for those
 
 Known: disc menus cannot be clicked on macOS. libVLC embeds through `caopengllayer`, whose view
 gets no mouse-moved events from a Qt-owned window, so nothing highlights under the pointer.
