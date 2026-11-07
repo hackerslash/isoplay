@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
-from isoplay.disc_image import project_iso9660, project_zip
+from isoplay.disc_image import MEDIA_EXT, project_iso9660, project_media, project_zip
 
 UA = "Mozilla/5.0 isoplay"
 
@@ -197,74 +197,103 @@ class RangeCache:
         self.upstream.close()
 
     def _handler(self):
-        cache = self
-        last = (cache.size - 1) // BLOCK
+        return _endpoint(self)
 
-        class H(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
 
-            def log_message(self, *a):
-                pass
+def _endpoint(cache):
+    last = (cache.size - 1) // BLOCK
 
-            def _head(self):
-                size = cache.view.size if cache.view else cache.size
-                start, end, partial = 0, size - 1, False
-                m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
-                if m and (m[1] or m[2]):
-                    partial = True
-                    if m[1]:
-                        start = int(m[1])
-                        end = min(int(m[2]), end) if m[2] else end
-                    else:
-                        start = max(0, size - int(m[2]))
-                if start >= size or end < start:
-                    self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{size}")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return None
-                self.send_response(206 if partial else 200)
-                if partial:
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-                self.send_header("Content-Length", str(end - start + 1))
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Content-Type", "application/octet-stream")
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _head(self):
+            size = cache.view.size if cache.view else cache.size
+            start, end, partial = 0, size - 1, False
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+            if m and (m[1] or m[2]):
+                partial = True
+                if m[1]:
+                    start = int(m[1])
+                    end = min(int(m[2]), end) if m[2] else end
+                else:
+                    start = max(0, size - int(m[2]))
+            if start >= size or end < start:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
-                return start, end
+                return None
+            self.send_response(206 if partial else 200)
+            if partial:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            return start, end
 
-            def do_HEAD(self):
-                self._head()
+        def do_HEAD(self):
+            self._head()
 
-            def do_GET(self):
-                r = self._head()
-                if not r:
-                    return
-                pos, end = r
-                first = pos // BLOCK
-                try:
-                    while pos <= end:
-                        if cache.view:
-                            chunk = cache.view.read(pos, min(BLOCK, end - pos + 1))
-                            self.wfile.write(chunk)
-                            pos += len(chunk)
-                            continue
-                        i, off = divmod(pos, BLOCK)
-                        if i > first:  # reader is streaming, not probing: keep blocks in flight
-                            for j in range(i + 1, min(i + cache.ahead, last) + 1):
-                                cache.block(j)
-                        chunk = cache.block(i).result()[off:off + end - pos + 1]
+        def do_GET(self):
+            r = self._head()
+            if not r:
+                return
+            pos, end = r
+            first = pos // BLOCK
+            try:
+                while pos <= end:
+                    if cache.view:
+                        chunk = cache.view.read(pos, min(BLOCK, end - pos + 1))
                         self.wfile.write(chunk)
                         pos += len(chunk)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                except Exception:
-                    self.close_connection = True
+                        continue
+                    i, off = divmod(pos, BLOCK)
+                    if i > first:  # reader is streaming, not probing: keep blocks in flight
+                        for j in range(i + 1, min(i + cache.ahead, last) + 1):
+                            cache.block(j)
+                    chunk = cache.block(i).result()[off:off + end - pos + 1]
+                    self.wfile.write(chunk)
+                    pos += len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                self.close_connection = True
 
-        return H
+    return H
 
 
-VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mts", ".wmv", ".flv",
-             ".mpg", ".mpeg", ".vob", ".m3u8", ".mpd", ".mp3", ".flac", ".ogg", ".opus", ".wav", ".m4a"}
+class LocalImage:
+    """An image on disk, projected and served like a remote one when libVLC can't open it directly."""
+
+    def __init__(self, path):
+        self.fp = open(path, "rb")
+        self.size = self.fp.seek(0, 2)
+        self.lock = threading.Lock()
+        self.view = None
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _endpoint(self))
+        self.server.daemon_threads = True
+        self.server.handle_error = lambda *a: None
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.mrl = f"http://127.0.0.1:{self.server.server_port}/disc.iso"
+
+    def read(self, pos, size):
+        with self.lock:
+            self.fp.seek(pos)
+            return self.fp.read(size)
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        if self.view:
+            self.view.close()
+        self.fp.close()
+
+
+VIDEO_EXT = MEDIA_EXT | {".m3u8", ".mpd"}
 DISC_EXT = {".iso", ".img", ".bin", ".udf"}
 ARCHIVE_EXT = {".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".r00", ".001", ".part", ".torrent"}
 KNOWN_EXT = VIDEO_EXT | DISC_EXT | ARCHIVE_EXT | {".zip"}
@@ -368,7 +397,23 @@ def _folder(path, disc_root):
 
 def _streamed(proxy, kind):
     view = proxy.view
+    if view is not None and getattr(view, "name", None):
+        # libVLC picks its demuxer from the URL, so a lifted title keeps its own name
+        proxy.mrl = proxy.mrl.rpartition("/")[0] + "/" + urllib.parse.quote(view.name)
     return proxy.mrl, kind, proxy, view.discs if view else (), view.disc_root if view else None
+
+
+def _project(image, project):
+    """Serve image through project, or close it and give up so the caller can fall back."""
+    try:
+        image.view = project(image)
+    except Exception:
+        image.close()
+        raise
+    if image.view is None:
+        image.close()
+        return None
+    return _streamed(image, image.view.kind)
 
 
 def prepare(src, disc_root=None):
@@ -382,13 +427,20 @@ def prepare(src, disc_root=None):
             raise OSError("That file isn't there any more")
         if p.is_dir():
             return _folder(p, disc_root)
-        if ext == ".zip":
-            raise OSError("Zipped discs only stream from a link. Extract this one first")
         if ext in VIDEO_EXT:
             return (src, *PLAIN)
         with open(p, "rb") as f:
             data = f.read(BLOCK)
-        return src, (disc_kind(data) if iso_signature(data) else None), None, (), None
+        if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+            return _project(LocalImage(p), lambda image: project_zip(image, root=disc_root))
+        if not iso_signature(data):
+            return (src, *PLAIN)
+        kind = disc_kind(data)
+        if kind is None:  # HD DVD, VCD, DVD-Audio, a rip of loose files: libVLC can't look inside
+            lifted = _project(LocalImage(p), project_media)
+            if lifted:
+                return lifted
+        return src, kind, None, (), None
     found = probe(src)
     if not found:
         return (src, *PLAIN)
@@ -403,6 +455,8 @@ def prepare(src, disc_root=None):
         kind = disc_kind(data)
         if kind == "bluray" and not udf:
             proxy.view = project_iso9660(proxy, root=disc_root)
+        elif kind is None:
+            proxy.view = project_media(proxy)
         return _streamed(proxy, kind)
     except Exception:
         proxy.close()

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- HD DVD, Video CD, DVD-Audio and plain rips of media files now play from an ISO or a `.zip`:
+  with no menu format libVLC can navigate, the main title is served as itself, numbered
+  `.EVO`/`.VOB`/`.DAT` parts joined back into one stream
+- Local `.zip` discs no longer have to be extracted first; they open like a linked one
 - Transport controls no longer stay pinned over a disc menu: a still menu reports "not playing",
   which the auto-hide rule read as "keep the controls up"
 

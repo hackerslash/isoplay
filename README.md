@@ -26,6 +26,9 @@ Blu-ray starts in seconds and never lands on disk.
 - **Zipped discs**, without unpacking. A disc stored uncompressed in a `.zip` is read in place,
   wherever its `VIDEO_TS` or `BDMV` folder sits inside the archive.
 - **ISO9660 containers**, which libbluray can't read, are republished as UDF on the fly.
+- **Everything else playable.** HD DVD, Video CD, DVD-Audio and plain rips of media files have no
+  menu format libVLC can navigate, so their main title is served as itself — numbered `.EVO`,
+  `.VOB` and `.DAT` parts joined back into one stream.
 - **Multi-disc images** open a chooser; switch later from **Discs in This Image** in the track menu.
 
 The host must support HTTP `Range` requests. Images must already be decrypted (no AACS, so no
@@ -33,9 +36,10 @@ retail UHD as-is).
 
 ## Also plays
 
-Local ISOs, `VIDEO_TS` and `BDMV` folders, and ordinary video files and links. Disc menus include
-Java (BD-J) menus, for DVD5/DVD9, BD25/BD50 and UHD BD66/BD100. libVLC with libbluray and
-libdvdnav plus a trimmed Java 17 runtime are bundled, so there is nothing else to install.
+Local ISOs and `.zip` discs, `VIDEO_TS` and `BDMV` folders, and ordinary video files and links.
+Disc menus include Java (BD-J) menus, for DVD5/DVD9, BD25/BD50 and UHD BD66/BD100. libVLC with
+libbluray and libdvdnav plus a trimmed Java 17 runtime are bundled, so there is nothing else to
+install.
 
 ## Install
 
@@ -81,7 +85,8 @@ Nothing is installed outside `.venv` and no bundle is built.
 
 ```
 isoplay/        media.py streams and probes links, disc_image.py projects ISO9660 and zip
-                discs as UDF, app.py is the window, widgets.py and theme.py the interface
+                discs as UDF or lifts a single title out, app.py is the window, widgets.py
+                and theme.py the interface
 tests/          unittest suite; test_isoplay.py covers the media layer with no Qt
 build.py        produces the self-contained bundle in dist/
 ```

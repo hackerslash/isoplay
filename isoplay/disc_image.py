@@ -1,11 +1,14 @@
-"""Present a disc buried in an ISO9660 image or a zip as a seekable UDF image.
+"""Present a disc buried in an ISO9660 image or a zip as something libVLC can open.
 
-libbluray reads UDF, not ISO9660 or zip, and libdvdread wants VIDEO_TS at the root.
-Only the chosen disc's filesystem metadata is generated, in memory; the video stays
-in the upstream cache and is never copied.
+libbluray reads UDF, not ISO9660 or zip, and libdvdread wants VIDEO_TS at the root, so
+DVDs and Blu-rays are republished as UDF. Formats libVLC plays but cannot navigate --
+HD DVD, VCD, DVD-Audio, a plain rip of media files -- have their main title served as
+itself instead. Either way only metadata is generated, in memory; the payload stays in
+the upstream cache and is never copied.
 """
 import bisect
 import io
+import re
 import struct
 import threading
 import zipfile
@@ -171,17 +174,71 @@ class _ExtentFile(io.RawIOBase):
         return bytes(out)
 
 
-def project_iso9660(cache, root=None):
-    """Return a UDF view for an ISO9660-only Blu-ray, or None for other images.
+class _FileView(io.RawIOBase):
+    """One title lifted out of an image and served as itself, for what libVLC can't navigate."""
 
-    Default to the disc with the most stream data; root selects a different
-    disc folder. Expose all choices on the view. No media payload is fetched.
+    def __init__(self, fp, name):
+        self.fp, self.size, self.name = fp, fp.size, name
+        self.lock = threading.Lock()
+        self.discs, self.disc_root, self.kind = (), None, None
+
+    def read(self, pos, size):
+        with self.lock:  # concurrent HTTP readers share one cursor
+            self.fp.seek(pos)
+            return self.fp.read(size)
+
+    def close(self):
+        self.fp.close()
+        super().close()
+
+
+MEDIA_EXT = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mts", ".wmv", ".flv",
+             ".mpg", ".mpeg", ".vob", ".evo", ".dat", ".aob", ".mka", ".mp3", ".flac", ".ogg", ".opus",
+             ".wav", ".m4a", ".ac3", ".dts", ".aiff", ".wv", ".ape"}
+NUMBERED = re.compile(r"(.*?)(\d+)(\.[^.]+)")
+
+
+def _ext(path):
+    stem, dot, ext = path.rpartition("/")[2].rpartition(".")
+    return "." + ext.lower() if dot else ""
+
+
+def _main_title(files):
+    """(name, spans) of the largest playable file plus its numbered continuations.
+
+    VOB, EVO and DAT sets split one title across siblings that differ only in a
+    fixed-width trailing number, so the biggest file alone is never the title.
     """
+    playable = {path: spans for path, spans in files.items() if _ext(path) in MEDIA_EXT}
+    if not playable:
+        return None, None
+    size = lambda path: sum(length for _, length in playable[path])  # noqa: E731
+    main = max(playable, key=lambda path: (size(path), path))
+    parent, _, name = main.rpartition("/")
+    match = NUMBERED.fullmatch(name)
+    if not match:
+        return name, playable[main]
+    sequel = re.compile(re.escape(match[1]) + r"\d{%d}" % len(match[2]) + re.escape(match[3]), re.I)
+    group = sorted(p for p in playable
+                   if p.rpartition("/")[0] == parent and sequel.fullmatch(p.rpartition("/")[2]))
+    spans = []
+    for path in group:
+        spans += playable[path]
+    return group[0].rpartition("/")[2], spans
+
+
+def _title_view(cache, files):
+    name, spans = _main_title(files)
+    return _FileView(_ExtentFile(cache, spans), name) if spans else None
+
+
+def _walk_iso9660(cache, skip_udf=False):
+    """({path: [(offset, length)]}, directories) for the ISO9660 tree, or (None, None) for UDF."""
     original = pycdlib.PyCdlib()
     original.open_fp(CacheFile(cache))
     try:
-        if original.has_udf():
-            return None
+        if skip_udf and original.has_udf():
+            return None, None
         directories, files = [], {}
         todo = [("", original.get_record(iso_path="/"))]
         while todo:
@@ -202,27 +259,47 @@ def project_iso9660(cache, root=None):
                 if record.is_dir():
                     todo.append((child, record))
                 else:
-                    files.setdefault(child, []).append(record)
-        streams = {path: _ExtentFile(cache, [(r.extent_location() * 2048, r.data_length) for r in records])
-                   for path, records in files.items()}
-        candidates = {}
-        for path, fp in streams.items():
-            parent, _, name = path.rpartition("/")
-            if parent.upper().endswith("/BDMV/STREAM") and name.upper().endswith(".M2TS"):
-                disc_root = parent[:-len("/BDMV/STREAM")]
-                candidates[disc_root] = candidates.get(disc_root, 0) + fp.size
-        if not candidates:
-            return None
-        discs = tuple(sorted(candidates, key=lambda path: (-candidates[path], path)))
-        if root is None:
-            root = discs[0]
-        elif root not in candidates:
-            raise ValueError("The selected disc folder is not in this image")
-        inside = {path[len(root):]: fp for path, fp in streams.items() if path.startswith(root + "/")}
-        return _build_udf(inside, [p[len(root):] for p in directories if p.startswith(root + "/")],
-                          discs, root, "bluray")
+                    files.setdefault(child, []).append((record.extent_location() * 2048, record.data_length))
+        return files, directories
     finally:
         original.close()
+
+
+def project_media(cache):
+    """The main title of an image libVLC plays but can't navigate: HD DVD, VCD, DVD-Audio, data rips."""
+    try:
+        files, _ = _walk_iso9660(cache)
+    except Exception:
+        return None  # not a tree pycdlib can read; let libVLC try the image itself
+    return _title_view(cache, files)
+
+
+def project_iso9660(cache, root=None):
+    """Return a UDF view for an ISO9660-only Blu-ray, or None for other images.
+
+    Default to the disc with the most stream data; root selects a different
+    disc folder. Expose all choices on the view. No media payload is fetched.
+    """
+    files, directories = _walk_iso9660(cache, skip_udf=True)
+    if files is None:
+        return None
+    streams = {path: _ExtentFile(cache, spans) for path, spans in files.items()}
+    candidates = {}
+    for path, fp in streams.items():
+        parent, _, name = path.rpartition("/")
+        if parent.upper().endswith("/BDMV/STREAM") and name.upper().endswith(".M2TS"):
+            disc_root = parent[:-len("/BDMV/STREAM")]
+            candidates[disc_root] = candidates.get(disc_root, 0) + fp.size
+    if not candidates:
+        return None
+    discs = tuple(sorted(candidates, key=lambda path: (-candidates[path], path)))
+    if root is None:
+        root = discs[0]
+    elif root not in candidates:
+        raise ValueError("The selected disc folder is not in this image")
+    inside = {path[len(root):]: fp for path, fp in streams.items() if path.startswith(root + "/")}
+    return _build_udf(inside, [p[len(root):] for p in directories if p.startswith(root + "/")],
+                      discs, root, "bluray")
 
 
 def _build_udf(streams, directories, discs, root, kind):
@@ -281,12 +358,21 @@ def _zip_discs(names):
 
 
 def project_zip(cache, root=None):
-    """Present a disc folder stored inside a zip as a UDF image, without unpacking it."""
+    """Present a disc folder stored inside a zip as a UDF image, without unpacking it.
+
+    A zip holding no navigable disc falls back to its main title, served as itself.
+    """
     with zipfile.ZipFile(CacheFile(cache)) as archive:
         spans = _stored_spans(cache, archive)
-        found = _zip_discs(archive.namelist())
+        names = archive.namelist()
+    found = _zip_discs(names)
     if not found:
-        raise OSError("No DVD or Blu-ray in that zip")
+        view = _title_view(cache, {name: [span] for name, span in spans.items()})
+        if view:
+            return view
+        if any(_ext(name) in MEDIA_EXT for name in names):
+            raise OSError("That zip is compressed, so it can't be streamed. Extract it first")
+        raise OSError("No playable media in that zip")
     discs = tuple(sorted(found))
     if root is None:
         root = max(discs, key=lambda d: sum(spans.get(n, (0, 0))[1] for n in found[d][1].values()))

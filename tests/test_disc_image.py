@@ -14,7 +14,7 @@ import pycdlib
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from isoplay import media
 from isoplay.app import Player
-from isoplay.disc_image import CacheFile, project_iso9660, project_zip
+from isoplay.disc_image import CacheFile, project_iso9660, project_media, project_zip
 from PySide6.QtWidgets import QApplication, QMenu
 
 
@@ -67,12 +67,36 @@ def fixture(large=False, udf=False, nested=True):
     return fp
 
 
+def iso_fixture(files):
+    """An ISO9660 image holding exactly the given {path: payload}."""
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    for path, data in files.items():
+        parent = path.rpartition("/")[0]
+        if parent and parent not in [d for d, _, _ in iso.walk(iso_path="/")]:
+            iso.add_directory(iso_path=parent)
+        iso.add_fp(io.BytesIO(data), len(data), iso_path=path + ";1")
+    fp = tempfile.TemporaryFile()
+    iso.write_fp(fp)
+    iso.close()
+    return fp
+
+
 def zip_fixture(names, compress=zipfile.ZIP_STORED):
     fp = tempfile.TemporaryFile()
     with zipfile.ZipFile(fp, "w", compress) as z:
         for name in names:
             z.writestr(name, b"\0" * 4096)
     return fp
+
+
+class Server:
+    """Stand in for the loopback server so the suite stays socket-free."""
+    server_port = 12345
+    def __init__(self, *args): pass
+    def serve_forever(self): pass
+    def shutdown(self): pass
+    def server_close(self): pass
 
 
 class ZipProjectionTests(unittest.TestCase):
@@ -103,11 +127,70 @@ class ZipProjectionTests(unittest.TestCase):
                 project_zip(FileCache(fp))
         self.assertIn("compressed", str(caught.exception))
 
-    def test_a_zip_without_a_disc_is_refused(self):
-        with zip_fixture(["holiday/clip.mp4"]) as fp:
+    def test_a_zip_of_loose_media_plays_its_biggest_file(self):
+        with zip_fixture(["holiday/notes.txt", "holiday/clip.mp4"]) as fp:
+            view = project_zip(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual((view.name, view.kind, view.size), ("clip.mp4", None, 4096))
+            self.assertEqual(view.read(0, 4096), b"\0" * 4096)
+
+    def test_a_zip_with_nothing_playable_is_refused(self):
+        with zip_fixture(["holiday/notes.txt"]) as fp:
             with self.assertRaises(OSError) as caught:
                 project_zip(FileCache(fp))
-        self.assertIn("No DVD or Blu-ray", str(caught.exception))
+        self.assertIn("No playable media", str(caught.exception))
+
+    def test_a_compressed_video_says_so_rather_than_claiming_there_is_none(self):
+        with zip_fixture(["holiday/clip.mp4"], zipfile.ZIP_DEFLATED) as fp:
+            with self.assertRaises(OSError) as caught:
+                project_zip(FileCache(fp))
+        self.assertIn("compressed", str(caught.exception))
+
+
+class TitleLiftTests(unittest.TestCase):
+    """Formats libVLC plays but cannot navigate: the main title is served as itself."""
+
+    def test_hd_dvd_joins_its_own_evo_set_only(self):
+        with iso_fixture({"/HVDVD_TS/HV000M01.EVO": b"trailer",
+                          "/HVDVD_TS/HV001M01.EVO": b"feature-one" * 40,
+                          "/HVDVD_TS/HV001M02.EVO": b"feature-two" * 10,
+                          "/HVDVD_TS/HV001I01.IFO": b"ifo"}) as fp:
+            view = project_media(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual(view.name, "HV001M01.evo")  # HV000M01 is a different title
+            self.assertEqual(view.read(0, view.size), b"feature-one" * 40 + b"feature-two" * 10)
+
+    def test_video_cd_concatenates_its_sequences(self):
+        with iso_fixture({"/MPEGAV/AVSEQ01.DAT": b"one", "/MPEGAV/AVSEQ02.DAT": b"two"}) as fp:
+            view = project_media(FileCache(fp))
+            self.addCleanup(view.close)
+            self.assertEqual((view.name, view.read(0, view.size)), ("AVSEQ01.dat", b"onetwo"))
+
+    def test_an_image_with_nothing_playable_is_left_to_libvlc(self):
+        with iso_fixture({"/README.TXT": b"nothing here"}) as fp:
+            self.assertIsNone(project_media(FileCache(fp)))
+
+    def _local(self, name, fp):
+        path = os.path.join(tempfile.mkdtemp(), name)
+        fp.seek(0)
+        with open(path, "wb") as out:
+            out.write(fp.read())
+        with patch.object(media, "ThreadingHTTPServer", Server):
+            result = media.prepare(path)
+        self.addCleanup(result[2].close)
+        return result
+
+    def test_a_local_zip_no_longer_has_to_be_extracted(self):
+        with zip_fixture(["Rip/VIDEO_TS.IFO", "Rip/VTS_01_1.VOB"]) as fp:
+            mrl, kind, _, _, root = self._local("rip.zip", fp)
+        self.assertEqual((kind, root), ("dvd", "Rip"))
+        self.assertEqual(mrl, "http://127.0.0.1:12345/disc.iso")
+
+    def test_a_lifted_title_keeps_its_name_so_libvlc_picks_the_demuxer(self):
+        with iso_fixture({"/HVDVD_TS/HV001M01.EVO": b"feature"}) as fp:
+            mrl, kind, proxy, _, _ = self._local("movie.iso", fp)
+        self.assertEqual((kind, mrl), (None, "http://127.0.0.1:12345/HV001M01.evo"))
+        self.assertEqual(proxy.view.read(0, 7), b"feature")
 
     def test_every_disc_in_the_archive_is_offered(self):
         with zip_fixture(["A/VIDEO_TS.IFO", "A/VTS_01_1.VOB", "B/BDMV/index.bdmv",
@@ -246,12 +329,6 @@ class ProjectionTests(unittest.TestCase):
             self.assertIsNone(project_iso9660(FileCache(fp)))
 
     def test_prepare_and_http_ranges_use_projected_size(self):
-        class Server:
-            server_port = 12345
-            def __init__(self, *args): pass
-            def serve_forever(self): pass
-            def shutdown(self): pass
-            def server_close(self): pass
         class Response(io.BytesIO):
             status = 206
         with fixture() as fp:

@@ -371,7 +371,8 @@ class Player(QMainWindow):
     def browse(self):
         f, _ = QFileDialog.getOpenFileName(
             self, "Open File", self.settings.value("dir", ""),
-            "Disc images and video (*.iso *.img *.mkv *.mp4 *.m4v *.m2ts *.ts *.avi *.mov *.webm *.vob);;"
+            "Disc images and video (*.iso *.img *.zip *.mkv *.mp4 *.m4v *.m2ts *.ts *.avi *.mov "
+            "*.webm *.vob *.evo);;"
             "All files (*)")
         if f:
             self.settings.setValue("dir", str(Path(f).parent))
