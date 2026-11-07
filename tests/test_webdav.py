@@ -293,6 +293,23 @@ class ShareTests(unittest.TestCase):
         self.assertNotIn(("f", 0), memory)  # f was older than e once e was read
         self.assertIn(("e", 0), memory)
 
+    def test_the_arrival_rate_counts_recent_fetches(self):
+        class Upstream:
+            throttles, closed = 0, False
+
+            def get(self, start, end):
+                return media._Body(206, {}, bytes(end - start + 1))
+
+            def close(self):
+                pass
+
+        blocks = media.Blocks("http://host/f", size=64 << 20, upstream=Upstream(), bs=1 << 20)
+        self.addCleanup(blocks.close)
+        blocks.read(0, 8 << 20)
+        self.assertAlmostEqual(blocks.rate(), (8 << 20) / media.RATE_WINDOW)
+        blocks.arrivals[0] = (time.monotonic() - media.RATE_WINDOW - 1, blocks.arrivals[0][1])
+        self.assertLess(blocks.rate(), (8 << 20) / media.RATE_WINDOW)
+
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
             webdav.walk("http://127.0.0.1:1/", lambda url: b"<html><br></html>")  # invalid XML

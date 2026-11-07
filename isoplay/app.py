@@ -125,6 +125,7 @@ class Player(QMainWindow):
         self.buffering = False
         self.deadline = 0.0
         self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
+        self.stalls = []  # when buffering interrupted playback, for telling a link too slow for its video
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -538,7 +539,7 @@ class Player(QMainWindow):
         self.mp.play()
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
-        self.opened_at, self.stuck_at = time.monotonic(), (-1, 0.0)
+        self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -564,7 +565,10 @@ class Player(QMainWindow):
             started = self.mp.get_time() > 0
             idle = max(self.osd_until, self.busy_until) < time.monotonic()
             if pct < 100 and started and (self.buffering or idle):
-                self.flash("Buffering", sticky=True, busy=True, percent=pct)
+                if not self.buffering:
+                    now = time.monotonic()
+                    self.stalls = [t for t in self.stalls if now - t < 120] + [now]
+                self.flash(self.buffering_text(), sticky=True, busy=True, percent=pct)
                 self.buffering = True
             elif pct >= 100 and self.buffering:
                 self.flash("")
@@ -581,6 +585,14 @@ class Player(QMainWindow):
                 self.flash("The disc menu didn't load. Try Play Main Title Without Menus", seconds=10)
             else:
                 self.fail("This wouldn't play")
+
+    def buffering_text(self):
+        """Repeated stalls mean the link can't keep up; say so, with what is actually arriving."""
+        if len(self.stalls) < 3:
+            return "Buffering"
+        rate = self.proxy.rate() if self.proxy is not None and hasattr(self.proxy, "rate") else 0
+        arriving = f" (about {rate / 1e6:.1f} MB/s arriving)" if rate else ""
+        return f"Buffering\nThis connection is too slow for this video{arriving}"
 
     # --- transport ---------------------------------------------------------------------------------
 

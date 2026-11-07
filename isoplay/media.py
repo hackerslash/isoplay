@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -217,6 +217,7 @@ class Memory:
 
 
 DISK = None  # a DiskCache the app sets up; blocks a reader asked for outlive the play in it
+RATE_WINDOW = 20  # seconds of fetches the arrival rate is measured over
 KEEP = 256 << 20  # RAM for one link's blocks, or for all of a share's together: the window and behind it
 RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
 # How far read-ahead runs past the player: ~20 s of UHD. libVLC's own buffer stays short so a
@@ -251,6 +252,7 @@ class Blocks:
         self.upstream = upstream or Upstream(url)
         self.pending, self.lock, self.requests = {}, threading.Lock(), 0
         self.streak = [-2, -2]  # first and last block of the reader's current in-order run
+        self.arrivals = deque()  # (time, bytes) of the fetches in the last RATE_WINDOW
         self.warming = {}  # block -> (job, first, futures) still queued on a background pool
         self.background = background  # where read-ahead queues, if not behind readers in `pool`
         self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(streams + 2), True)
@@ -302,6 +304,8 @@ class Blocks:
             else:
                 raise OSError(f"short read at block {first}")
             self._adapt(ok and self.upstream.throttles == throttles)
+            with self.lock:
+                self.arrivals.append((time.monotonic(), len(data)))
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             for k, part in enumerate(parts):
                 self.memory.put((self, first + k), part)
@@ -373,6 +377,13 @@ class Blocks:
             else:
                 self._promote(i)
             return self.pending[i]
+
+    def rate(self):
+        """Bytes a second arriving from the host lately."""
+        with self.lock:
+            while self.arrivals and self.arrivals[0][0] < time.monotonic() - RATE_WINDOW:
+                self.arrivals.popleft()
+            return sum(size for _, size in self.arrivals) / RATE_WINDOW
 
     def peek(self, pos, n):
         """A few bytes straight from upstream, without fetching or caching the block around them."""
@@ -544,6 +555,9 @@ class Share(Served):
         self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub), self.ahead, memory)
                         for path, (link, size) in files.items()}
         self._serve()
+
+    def rate(self):
+        return sum(stream.cache.rate() for stream in self.streams.values())
 
     def close(self):
         super().close()

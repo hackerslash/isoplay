@@ -14,8 +14,9 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0)
+                  deadline=0.0, stalls=[], proxy=None)
     player.mp.get_time.return_value = 5000
+    player.buffering_text = lambda: Player.buffering_text(player)
     player.__dict__.update(overrides)
     return player
 
@@ -35,6 +36,20 @@ class BufferingTests(unittest.TestCase):
         player = waiting(buffering=True)
         Player.on_event(player, "buffer:60")
         player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=60)
+
+    def test_repeated_stalls_say_the_connection_is_too_slow_with_the_rate_arriving(self):
+        player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
+        for _ in range(3):  # three separate stalls
+            player.buffering = False
+            Player.on_event(player, "buffer:10")
+        text = player.flash.call_args.args[0]
+        self.assertIn("too slow", text)
+        self.assertIn("5.3 MB/s", text)
+
+    def test_one_stall_is_just_buffering(self):
+        player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
+        Player.on_event(player, "buffer:10")
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=10)
 
     def test_full_buffer_clears_only_after_buffering(self):
         player = waiting(buffering=True, busy_until=0.0)
