@@ -4,8 +4,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-import isoplay
-from isoplay import RangeCache, disc_kind, fmt, iso_signature, prepare, suffix
+from isoplay import media
+from isoplay.media import RangeCache, disc_kind, fmt, iso_signature, prepare, suffix
 
 assert os.path.isfile(os.environ["SSL_CERT_FILE"])  # https links fail without a trust store
 assert disc_kind(b"..\x08BDMV..") == "bluray"
@@ -60,7 +60,7 @@ class Up(BaseHTTPRequestHandler):
 
 up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
 threading.Thread(target=up.serve_forever, daemon=True).start()
-isoplay.BLOCK = 1000
+media.BLOCK = 1000
 c = RangeCache(f"http://127.0.0.1:{up.server_port}/x.iso", keep=3, ahead=2)
 assert c.size == len(DATA)
 assert c.read(990, 30) == DATA[990:1020]
@@ -83,7 +83,7 @@ except Exception as e:
 assert len(c.blocks) <= 3
 c.close()
 
-isoplay.BLOCK = 1 << 20
+media.BLOCK = 1 << 20
 url = f"http://127.0.0.1:{up.server_port}/download?id=7"  # no extension: sniffed, then proxied
 mrl, kind, proxy = prepare(url)
 assert kind == "dvd" and mrl.startswith("http://127.0.0.1:") and proxy

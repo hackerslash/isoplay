@@ -120,7 +120,7 @@ def icon_png():
     img = QImage(1024, 1024, QImage.Format_ARGB32)
     img.fill(Qt.transparent)
     p = QPainter(img)
-    QSvgRenderer(str(ROOT / "assets/icon.svg")).render(p)
+    QSvgRenderer(str(ROOT / "isoplay/assets/icon.svg")).render(p)
     p.end()
     out = BUILD / "icon.png"
     img.save(str(out))
@@ -136,11 +136,10 @@ def main():
     jre()
 
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "isoplay",
-        "--icon", icon_png(), "--add-data", f"{ROOT / 'assets/icon.svg'}{os.pathsep}assets",
-        "--add-data", f"{ROOT / 'assets/media-badges'}{os.pathsep}assets/media-badges",
+        "--icon", icon_png(), "--add-data", f"{ROOT / 'isoplay/assets'}{os.pathsep}assets",
         "--collect-data", "certifi",
         "--osx-bundle-identifier", "io.github.hackerslash.isoplay",
-        "--workpath", BUILD / "pyinstaller", "--distpath", DIST, ROOT / "isoplay.py")
+        "--workpath", BUILD / "pyinstaller", "--distpath", DIST, ROOT / "run.py")
 
     if sys.platform == "darwin":
         app = DIST / "isoplay.app"

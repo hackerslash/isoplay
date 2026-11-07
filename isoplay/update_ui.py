@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
-import updates
+from isoplay import updates
 
 
 class UpdateUI(QObject):

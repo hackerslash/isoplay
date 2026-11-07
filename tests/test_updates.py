@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 import zipfile
 
-import updates
+from isoplay import updates
 
 
 def archive(system="linux", unsafe=False):

@@ -16,11 +16,11 @@ import threading
 import time
 from unittest.mock import patch
 
-import updates
+from isoplay import updates
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parent.parent
     name = updates.asset_name()
     archive = root / "dist" / name
     source = root / "dist" / ("isoplay.app" if sys.platform == "darwin" else "isoplay")

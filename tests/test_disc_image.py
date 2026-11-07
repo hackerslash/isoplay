@@ -11,8 +11,10 @@ from types import SimpleNamespace
 import pycdlib
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-import isoplay
-from disc_image import CacheFile, project_iso9660
+from isoplay import media
+from isoplay.app import Player
+from isoplay.disc_image import CacheFile, project_iso9660
+from PySide6.QtWidgets import QApplication, QMenu
 
 
 class FileCache:
@@ -74,14 +76,14 @@ class ProjectionTests(unittest.TestCase):
                                          chooser=Mock(), stack=Mock(), mp=Mock(), vlc=Mock(),
                                          remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock())
                 result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy)
-                isoplay.Player.start(player, 1, result)
+                Player.start(player, 1, result)
                 if roots and len(roots) > 1:
                     player.mp.play.assert_not_called()
                     player.chooser.set_discs.assert_called_once_with(roots)
                     player.stack.setCurrentWidget.assert_called_once_with(player.chooser)
                     self.assertEqual(player.pending_disc, (1, result))
                     player.play = Mock()
-                    isoplay.Player.choose_disc(player, "/BONUS")
+                    Player.choose_disc(player, "/BONUS")
                     player.play.assert_called_once_with("image.iso", menus=True, disc_root="/BONUS")
                 else:
                     player.chooser.set_discs.assert_not_called()
@@ -91,7 +93,7 @@ class ProjectionTests(unittest.TestCase):
         result = ("http://127.0.0.1/disc.iso", "bluray", None)
         player = SimpleNamespace(pending_disc=(1, result), disc_root="/FEATURE", stack=Mock(),
                                  video=object(), start=Mock(), play=Mock())
-        isoplay.Player.choose_disc(player, "/FEATURE")
+        Player.choose_disc(player, "/FEATURE")
         player.start.assert_called_once_with(1, result)
         player.play.assert_not_called()
         self.assertIsNone(player.pending_disc)
@@ -130,20 +132,20 @@ class ProjectionTests(unittest.TestCase):
             def play(self, src, **options):
                 calls.append((src, options))
         player = Playback()
-        isoplay.Player.replay_main(player)
+        Player.replay_main(player)
         self.assertEqual(calls, [(player.current, {"menus": False, "disc_root": "/BONUS"})])
 
     def test_disc_menu_action_switches_to_bonus(self):
-        app = isoplay.QApplication.instance() or isoplay.QApplication([])
-        menu = isoplay.QMenu()
+        app = QApplication.instance() or QApplication([])
+        menu = QMenu()
         calls = []
         player = SimpleNamespace(
             proxy=SimpleNamespace(view=SimpleNamespace(discs=("/THE_ODYSSEY", "/SPECIAL_FEATURES"))),
             disc_root="/THE_ODYSSEY", current="https://example.com/container.iso", use_menus=True,
             play=lambda src, **options: calls.append((src, options)),
         )
-        player.switch_disc = lambda root: isoplay.Player.switch_disc(player, root)
-        isoplay.Player.add_disc_choices(player, menu)
+        player.switch_disc = lambda root: Player.switch_disc(player, root)
+        Player.add_disc_choices(player, menu)
         choices = menu.actions()[0].menu()
         self.assertEqual(choices.title(), "Discs in This Image")
         self.assertEqual([a.text() for a in choices.actions()], ["The Odyssey", "Special Features"])
@@ -206,8 +208,8 @@ class ProjectionTests(unittest.TestCase):
                 response = Response(data[start:end + 1])
                 response.headers = {"Content-Range": f"bytes {start}-{end}/{len(data)}"}
                 return response
-            with patch.object(isoplay, "ThreadingHTTPServer", Server), patch.object(isoplay.RangeCache, "_get", get):
-                _, kind, cache = isoplay.prepare("https://example.com/container.iso")
+            with patch.object(media, "ThreadingHTTPServer", Server), patch.object(media.RangeCache, "_get", get):
+                _, kind, cache = media.prepare("https://example.com/container.iso")
             try:
                 self.assertEqual(kind, "bluray")
                 self.assertIsNotNone(cache.view)

@@ -37,14 +37,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends libvlc5 libvlccore9 vlc-plugin-base \
             vlc-plugin-video-output libbluray-bdj libxcb-cursor0
       - run: pip install -r requirements.txt
-      - run: python -m unittest -v test_updates.py test_update_ui.py
-      - run: python -m unittest -v test_disc_image.py
+      - run: python -m unittest -v tests.test_updates tests.test_update_ui
+      - run: python -m unittest -v tests.test_disc_image
         if: runner.os == 'Linux'
-      - run: python test_isoplay.py
+      - run: python -m tests.test_isoplay
         if: runner.os == 'Linux'
       - run: python build.py
-      - run: python -m unittest -v test_welcome.py
-      - run: python test_update_bundle.py
+      - run: python -m unittest -v tests.test_welcome
+      - run: python -m tests.test_update_bundle
       - uses: actions/upload-artifact@v4
         with:
           name: isoplay-${{ runner.os }}
