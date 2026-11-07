@@ -83,6 +83,30 @@ except Exception as e:
 assert len(c.blocks) <= 3
 c.close()
 
+
+
+class KeepAlive(Up):
+    protocol_version = "HTTP/1.1"
+
+
+accepted = []
+
+
+class Counting(ThreadingHTTPServer):
+    def process_request(self, request, address):
+        accepted.append(address)
+        super().process_request(request, address)
+
+
+alive = Counting(("127.0.0.1", 0), KeepAlive)
+threading.Thread(target=alive.serve_forever, daemon=True).start()
+c = RangeCache(f"http://127.0.0.1:{alive.server_port}/x.iso", keep=64, ahead=0)
+for i in range(12):  # one size probe plus twelve block fetches
+    c.read(i * 1000, 10)
+assert len(accepted) <= 4, f"13 range requests opened {len(accepted)} connections"
+c.close()
+alive.shutdown()
+
 media.BLOCK = 1 << 20
 url = f"http://127.0.0.1:{up.server_port}/download?id=7"  # no extension: sniffed, then proxied
 mrl, kind, proxy = prepare(url)

@@ -1,4 +1,6 @@
 """Locating, probing and streaming the thing the user asked to play. No Qt here."""
+import http.client
+import io
 import re
 import sys
 import threading
@@ -21,6 +23,84 @@ def is_url(src):
 
 
 BLOCK = 4 << 20
+REDIRECTS = {301, 302, 303, 307, 308}
+
+
+class _Body(io.BytesIO):
+    def __init__(self, status, headers, data):
+        super().__init__(data)
+        self.status, self.headers = status, headers
+
+
+class Upstream:
+    """Keep-alive connections to a remote disc image, one per reader thread.
+
+    A disc generates thousands of range requests, and a fresh TLS handshake for
+    each one costs more than the transfer.
+    """
+
+    def __init__(self, url, timeout=30):
+        if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+            raise OSError("only http and https disc images can be streamed")
+        self.url, self.timeout = url, timeout
+        self.local = threading.local()
+        self.lock = threading.Lock()
+        self.connections = []
+
+    def _connection(self):
+        url = self.url
+        held = getattr(self.local, "held", None)
+        if held and held[0] == url:
+            return held[1], url
+        self._drop()
+        parts = urllib.parse.urlsplit(url)
+        factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        connection = factory(parts.netloc, timeout=self.timeout)
+        self.local.held = (url, connection)
+        with self.lock:
+            self.connections.append(connection)
+        return connection, url
+
+    def _drop(self):
+        held = getattr(self.local, "held", None)
+        if not held:
+            return
+        self.local.held = None
+        with self.lock:
+            if held[1] in self.connections:
+                self.connections.remove(held[1])
+        held[1].close()
+
+    def get(self, start, end):
+        """One byte range, read in full so the connection is ready for the next block."""
+        for attempt in range(3):
+            connection, url = self._connection()
+            parts = urllib.parse.urlsplit(url)
+            try:
+                connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, "")),
+                                   headers={"Range": f"bytes={start}-{end}", "User-Agent": UA,
+                                            "Accept-Encoding": "identity"})
+                response = connection.getresponse()
+                data = response.read()
+            except (http.client.HTTPException, OSError):
+                self._drop()
+                if attempt == 2:
+                    raise
+                continue
+            if response.status in REDIRECTS and response.getheader("Location"):
+                self.url = urllib.parse.urljoin(url, response.getheader("Location"))
+                self._drop()
+                continue
+            if response.will_close:
+                self._drop()
+            return _Body(response.status, response.headers, data)
+        raise OSError("the server kept redirecting the disc image")
+
+    def close(self):
+        with self.lock:
+            connections, self.connections = self.connections, []
+        for connection in connections:
+            connection.close()
 
 
 class RangeCache:
@@ -34,6 +114,7 @@ class RangeCache:
 
     def __init__(self, url, keep=64, ahead=6):
         self.url, self.keep, self.ahead = url, keep, ahead
+        self.upstream = Upstream(url)
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
         self.pool = ThreadPoolExecutor(ahead + 2)
         self.size = self._size()
@@ -45,8 +126,7 @@ class RangeCache:
         self.mrl = f"http://127.0.0.1:{self.server.server_port}/disc.iso"
 
     def _get(self, start, end):
-        req = Request(self.url, headers={"Range": f"bytes={start}-{end}", "User-Agent": UA})
-        return urlopen(req, timeout=30)
+        return self.upstream.get(start, end)
 
     def _size(self):
         with self._get(0, 0) as r:
@@ -111,6 +191,7 @@ class RangeCache:
         if self.view:
             self.view.close()
         self.pool.shutdown(wait=False, cancel_futures=True)
+        self.upstream.close()
 
     def _handler(self):
         cache = self
