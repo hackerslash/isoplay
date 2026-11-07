@@ -579,10 +579,14 @@ def normalize(src):
     return src
 
 
+class WebPage(OSError):
+    """The link answered with a page, not media; a share's index can look like this."""
+
+
 def _not_a_page(headers, head=b""):
     if (headers.get_content_type() in ("text/html", "application/xhtml+xml")
             or head.lstrip()[:5].lower() in (b"<!doc", b"<html")):
-        raise OSError("That's a web page, not a video file")
+        raise WebPage("That's a web page, not a video file")
 
 
 def probe(url):
@@ -721,9 +725,7 @@ def prepare(src, disc_root=None):
         return _share(src, disc_root)
     try:
         found = probe(src)
-    except OSError as page:
-        if "web page" not in str(page):
-            raise
+    except WebPage as page:
         try:  # a share's own index page looks like one, so give it a listing before giving up
             return _share(src, disc_root)
         except NeedsCredentials:
