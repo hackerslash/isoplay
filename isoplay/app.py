@@ -23,7 +23,7 @@ from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
 from isoplay.widgets import (  # noqa: E402
-    DiscChooser, ElidedLabel, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
+    DiscChooser, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
 )
 
 NAME = "isoplay" if getattr(sys, "frozen", False) else "isoplay (dev)"

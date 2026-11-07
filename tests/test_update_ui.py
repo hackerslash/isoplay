@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
