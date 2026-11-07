@@ -26,6 +26,7 @@ from isoplay.widgets import (  # noqa: E402
     DiscChooser, ElidedLabel, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
 )
 
+NAME = "isoplay" if getattr(sys, "frozen", False) else "isoplay (dev)"
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
 BADGE = 36  # shared height of the back control and the status bubble beside it
 INSET = 18
@@ -47,7 +48,7 @@ class Player(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("isoplay")
+        self.setWindowTitle(NAME)
         self.resize(1120, 630)
         self.setMinimumSize(640, 400)
         self.setAcceptDrops(True)
@@ -193,7 +194,7 @@ class Player(QMainWindow):
         names = QVBoxLayout()
         names.setSpacing(2)
         names.addStretch()
-        names.addWidget(QLabel("isoplay", objectName="appname"))
+        names.addWidget(QLabel(NAME, objectName="appname"))
         names.addWidget(QLabel(f"Version {__version__}", objectName="version"))
         names.addStretch()
         head.addWidget(logo)
@@ -445,7 +446,7 @@ class Player(QMainWindow):
         self.disc_root, self.discs = None, ()
         self.ask_disc = False
         self.pending_disc = None
-        self.setWindowTitle("isoplay")
+        self.setWindowTitle(NAME)
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
         self.osd_until = self.busy_until = self.deadline = 0
@@ -806,6 +807,7 @@ def main():
         return
     app = QApplication(sys.argv)
     app.setApplicationName("isoplay")
+    app.setApplicationDisplayName(NAME)
     app.setWindowIcon(svg_icon((BASE / "assets/icon.svg").read_bytes(), 256))
     w = Player()
     w.show()
