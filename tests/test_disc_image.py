@@ -388,7 +388,7 @@ class ProjectionTests(unittest.TestCase):
                 response.headers = {"Content-Range": f"bytes {start}-{end}/{len(data)}"}
                 return response
             with patch.object(media, "ThreadingHTTPServer", Server), patch.object(media.RangeCache, "_get", get), \
-                    patch.object(media, "probe", lambda url: "disc"):
+                    patch.object(media, "probe", lambda url: ("disc", None)):
                 _, kind, cache, _, _ = media.prepare("https://example.com/container.iso")
             try:
                 self.assertEqual(kind, "bluray")

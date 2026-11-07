@@ -355,8 +355,8 @@ class Blocks:
 class RangeCache(Blocks, Served):
     """A remote disc image, cached in blocks and served to libVLC at a loopback URL."""
 
-    def __init__(self, url, keep=512, ahead=None):  # keep holds the whole read-ahead window
-        super().__init__(url, keep, ahead)
+    def __init__(self, url, keep=512, ahead=None, size=None):  # keep holds the whole read-ahead window
+        super().__init__(url, keep, ahead, size)
         self._serve()
 
     def close(self):
@@ -590,30 +590,33 @@ def _not_a_page(headers, head=b""):
 
 
 def probe(url):
-    """One ranged read: "disc", "zip" or None, sniffed because download links rarely have an extension."""
+    """One ranged read: ("disc" | "zip" | None, size), sniffed because download links rarely have an
+    extension. size is the total a ranged answer reports, so streaming needn't ask again; None if not."""
     req = Request(bare(url), headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA,
                                       **credentials(url)})
     try:
         with urlopen(req, timeout=20) as r:
             if r.status not in (200, 206):
-                return None
+                return None, None
             head = r.read(SNIFF)
             _not_a_page(r.headers, head)
+            total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
+            size = int(total) if r.status == 206 and total.isdigit() else None
     except HTTPError as e:
         if e.code in DEAD or e.code >= 500:
             raise OSError("That link is no longer available") from None
         _not_a_page(e.headers)  # a 416 on a web page still means the link is not a video
-        return None  # the server dislikes the probe, not the link; let the player try
+        return None, None  # the server dislikes the probe, not the link; let the player try
     except URLError:
         raise OSError("Couldn't reach that server") from None
     except TimeoutError:
         raise OSError("That server didn't respond") from None
     if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
-        return "zip"
+        return "zip", size
     for magic, name in ((b"Rar!", ".rar"), (b"7z\xbc\xaf", ".7z"), (b"\xfd7zXZ", ".xz")):
         if head.startswith(magic):
             raise OSError(f"isoplay can't open {name} archives")
-    return "disc" if iso_signature(head) else None
+    return ("disc" if iso_signature(head) else None), size
 
 
 DEPTH = 2  # folders to descend looking for discs: a rip of several discs is rarely deeper
@@ -724,7 +727,7 @@ def prepare(src, disc_root=None):
     if src.endswith("/"):  # a collection, not a file: only a share walk can make sense of it
         return _share(src, disc_root)
     try:
-        found = probe(src)
+        found, size = probe(src)
     except WebPage as page:
         try:  # a share's own index page looks like one, so give it a listing before giving up
             return _share(src, disc_root)
@@ -734,7 +737,7 @@ def prepare(src, disc_root=None):
             raise page from None
     if not found:
         return (src, *PLAIN)
-    proxy = RangeCache(src)
+    proxy = RangeCache(src, size=size)
     try:
         if found == "zip":
             proxy.view = project_zip(proxy, root=disc_root)

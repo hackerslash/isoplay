@@ -47,11 +47,15 @@ assert fmt(3_725_000) == "1:02:05" and fmt(65_000) == "1:05"
 DATA = image(b"BEA01", b"VIDEO_TS")
 
 
+RANGES = []
+
+
 class Up(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
     def do_GET(self):
+        RANGES.append(self.headers.get("Range"))
         if self.path == "/missing":
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -128,8 +132,10 @@ alive.shutdown()
 
 media.BLOCK = 1 << 20
 url = f"http://127.0.0.1:{up.server_port}/download?id=7"  # no extension: probed, then proxied
+RANGES.clear()
 mrl, kind, proxy, *_ = prepare(url)
 assert kind == "dvd" and mrl.startswith("http://127.0.0.1:") and proxy
+assert proxy.size == len(DATA) and "bytes=0-0" not in RANGES, RANGES  # the probe's size is reused
 proxy.close()
 print("ok")
 
