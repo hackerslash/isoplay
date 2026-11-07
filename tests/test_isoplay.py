@@ -73,7 +73,7 @@ class Up(BaseHTTPRequestHandler):
 up = ThreadingHTTPServer(("127.0.0.1", 0), Up)
 threading.Thread(target=up.serve_forever, daemon=True).start()
 media.BLOCK = 1000
-c = RangeCache(f"http://127.0.0.1:{up.server_port}/x.iso", keep=3, ahead=2)
+c = RangeCache(f"http://127.0.0.1:{up.server_port}/x.iso", keep=3 * 1000, ahead=2)
 assert c.size == len(DATA)
 assert c.read(990, 30) == DATA[990:1020]
 assert c.read(len(DATA) - 40, 500) == DATA[-40:]
@@ -92,7 +92,7 @@ try:
     raise AssertionError("expected 416")
 except Exception as e:
     assert getattr(e, "code", None) == 416, e
-assert len(c.blocks) <= 3
+assert c.memory.size <= 3 * 1000  # keep is a byte budget
 c.close()
 
 
@@ -112,7 +112,7 @@ class Counting(ThreadingHTTPServer):
 
 alive = Counting(("127.0.0.1", 0), KeepAlive)
 threading.Thread(target=alive.serve_forever, daemon=True).start()
-c = RangeCache(f"http://127.0.0.1:{alive.server_port}/x.iso", keep=64, ahead=0)
+c = RangeCache(f"http://127.0.0.1:{alive.server_port}/x.iso", keep=64 * 1000, ahead=0)
 for i in range(12):  # one size probe plus twelve block fetches
     c.read(i * 1000, 10)
 assert len(accepted) <= 4, f"13 range requests opened {len(accepted)} connections"

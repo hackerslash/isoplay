@@ -186,6 +186,36 @@ class Served:
             self.view.close()
 
 
+class Memory:
+    """Blocks held in RAM, least recently used dropped once past `limit` bytes. A share's files
+    share one, so its budget holds whichever stream is playing rather than every file it touched."""
+
+    def __init__(self, limit):
+        self.limit, self.size, self.items, self.lock = limit, 0, OrderedDict(), threading.Lock()
+
+    def __contains__(self, key):
+        return key in self.items
+
+    def __len__(self):
+        return len(self.items)
+
+    def get(self, key):
+        with self.lock:
+            data = self.items.get(key)
+            if data is not None:
+                self.items.move_to_end(key)
+            return data
+
+    def put(self, key, data):
+        with self.lock:
+            old = self.items.pop(key, None)
+            self.size += len(data) - (len(old) if old is not None else 0)
+            self.items[key] = data
+            while self.size > self.limit and len(self.items) > 1:
+                self.size -= len(self.items.popitem(last=False)[1])
+
+
+KEEP = 256 << 20  # RAM for one link's blocks, or for all of a share's together: the window and behind it
 RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
 # How far read-ahead runs past the player: ~20 s of UHD. libVLC's own buffer stays short so a
 # start or seek is quick; this one fills in the background while it plays.
@@ -206,11 +236,10 @@ class Blocks:
     requests: CDNs refuse a dozen connections at once (429, then connection refused), and a few
     large requests carry the same throughput as many small ones.
     """
-    # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
-
-    def __init__(self, url, keep=512, ahead=None, size=None, pool=None, bs=None, upstream=None, background=None,
-                 streams=10):
-        self.url, self.keep, self.bs, self.streams = url, keep, bs or BLOCK, streams
+    def __init__(self, url, keep=KEEP, ahead=None, size=None, pool=None, bs=None, upstream=None, background=None,
+                 streams=10, memory=None):
+        self.url, self.bs, self.streams = url, bs or BLOCK, streams
+        self.memory = memory or Memory(keep)
         # Read-ahead requests in flight, found as TCP finds a window: one more per round while there
         # is more to fetch than requests to fetch it, halved when the host throttles or fails.
         # Hosts differ wildly: one CDN refused a dozen connections, a share happily took 24.
@@ -218,7 +247,7 @@ class Blocks:
         self.ahead = AHEAD // self.bs if ahead is None else ahead  # in blocks
         self.run = max(1, RUN // self.bs)
         self.upstream = upstream or Upstream(url)
-        self.blocks, self.pending, self.lock, self.requests = OrderedDict(), {}, threading.Lock(), 0
+        self.pending, self.lock, self.requests = {}, threading.Lock(), 0
         self.streak = [-2, -2]  # first and last block of the reader's current in-order run
         self.warming = {}  # block -> (job, first, futures) still queued on a background pool
         self.background = background  # where read-ahead queues, if not behind readers in `pool`
@@ -264,11 +293,8 @@ class Blocks:
                 raise OSError(f"short read at block {first}")
             self._adapt(ok and self.upstream.throttles == throttles)
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
-            with self.lock:
-                for k, part in enumerate(parts):
-                    self.blocks[first + k] = part
-                while len(self.blocks) > self.keep:
-                    self.blocks.popitem(last=False)
+            for k, part in enumerate(parts):
+                self.memory.put((self, first + k), part)
             for future, part in zip(futures, parts):
                 future.set_result(part)
         except BaseException as e:
@@ -308,24 +334,24 @@ class Blocks:
         with self.lock:
             i = first
             while i < last:
-                if i in self.blocks or i in self.pending:
+                if (self, i) in self.memory or i in self.pending:
                     i += 1
                     continue
                 if limit is not None and self.requests >= limit:
                     self.starved = True
                     return
                 j = i + 1
-                while j < min(last, i + self.run) and j not in self.blocks and j not in self.pending:
+                while j < min(last, i + self.run) and (self, j) not in self.memory and j not in self.pending:
                     j += 1
                 self._queue(i, j, pool)
                 i = j
 
     def block(self, i):
         with self.lock:
-            if i in self.blocks:
-                self.blocks.move_to_end(i)
+            data = self.memory.get((self, i))
+            if data is not None:
                 f = Future()
-                f.set_result(self.blocks[i])
+                f.set_result(data)
                 return f
             if i not in self.pending:
                 self._queue(i, i + 1)
@@ -380,7 +406,7 @@ class Blocks:
 class RangeCache(Blocks, Served):
     """A remote disc image, cached in blocks and served to libVLC at a loopback URL."""
 
-    def __init__(self, url, keep=512, ahead=None, size=None):  # keep holds the whole read-ahead window
+    def __init__(self, url, keep=KEEP, ahead=None, size=None):  # keep holds the whole read-ahead window
         super().__init__(url, keep, ahead, size)
         self._serve()
 
@@ -488,7 +514,6 @@ SHARE_AHEAD = 8  # read-ahead requests in flight per file, one per read-ahead co
 # reader never queues behind speculation: blocks a reader waits on, read-ahead, and the disc's
 # small files fetched in advance. A queued speculative fetch a reader then needs is promoted.
 SHARE_POOL = 8
-SHARE_KEEP = 48  # blocks per file, so ~192 MiB on whichever stream is playing: the window and behind
 
 
 class Share(Served):
@@ -500,8 +525,8 @@ class Share(Served):
 
     def __init__(self, files):
         self.pool, self.ahead, self.warm = (ThreadPoolExecutor(SHARE_POOL) for _ in range(3))
-        hub = Upstream(next(iter(files.values()))[0])
-        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub), self.ahead)
+        hub, memory = Upstream(next(iter(files.values()))[0]), Memory(KEEP)
+        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub), self.ahead, memory)
                         for path, (link, size) in files.items()}
         self._serve()
 
@@ -516,9 +541,9 @@ class Share(Served):
 class RemoteFile(io.RawIOBase):
     """One file on a share, read through its own block cache off the share's connection pool."""
 
-    def __init__(self, url, size, pool=None, upstream=None, background=None):
-        self.cache = Blocks(url, keep=SHARE_KEEP, size=size, pool=pool, bs=SHARE_BLOCK, upstream=upstream,
-                            background=background, streams=SHARE_AHEAD)
+    def __init__(self, url, size, pool=None, upstream=None, background=None, memory=None):
+        self.cache = Blocks(url, size=size, pool=pool, bs=SHARE_BLOCK, upstream=upstream, background=background,
+                            streams=SHARE_AHEAD, memory=memory)
         self.size, self.pos = size, 0
 
     def readable(self):

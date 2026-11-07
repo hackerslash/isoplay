@@ -176,11 +176,12 @@ class ShareTests(unittest.TestCase):
         blocks = media.Blocks("http://host/f", size=1 << 30, upstream=Upstream(), bs=mib, streams=64)
         self.addCleanup(blocks.close)
         blocks.prefetch(500 * mib)  # a glance at one spot
-        self.assertLessEqual(max(set(blocks.pending) | set(blocks.blocks)), 500 + 1 + blocks.run)
+        held = lambda: set(blocks.pending) | {i for _, i in blocks.memory.items}  # noqa: E731
+        self.assertLessEqual(max(held()), 500 + 1 + blocks.run)
         for i in range(64):  # playback reading straight through
             blocks.prefetch(i * mib)
             blocks.read(i * mib, mib)
-        self.assertGreaterEqual(max(set(blocks.pending) | set(blocks.blocks) - {500}), 63 + blocks.ahead // 2)
+        self.assertGreaterEqual(max(held() - {500}), 63 + blocks.ahead // 2)
 
     def test_closing_wakes_a_read_stuck_on_a_silent_host(self):
         class Silent(BaseHTTPRequestHandler):
@@ -280,6 +281,17 @@ class ShareTests(unittest.TestCase):
             blocks._adapt(True)
         self.assertEqual(blocks._streams(), 5)
         self.assertLess(start, 10)
+
+    def test_a_share_holds_one_memory_budget_across_its_files(self):
+        memory = media.Memory(10)
+        for name in "abcdef":
+            memory.put((name, 0), b"xxxx")
+        self.assertLessEqual(memory.size, 10)
+        self.assertEqual([key for key, _ in memory.items.items()], [("e", 0), ("f", 0)])
+        self.assertEqual(memory.get(("e", 0)), b"xxxx")
+        memory.put(("g", 0), b"xxxx")
+        self.assertNotIn(("f", 0), memory)  # f was older than e once e was read
+        self.assertIn(("e", 0), memory)
 
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
