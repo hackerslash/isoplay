@@ -35,6 +35,7 @@ BADGE = 36  # shared height of the back control and the status bubble beside it
 INSET = 18
 TITLE_BAR = 28  # height macOS slides over a full-screen window, below the menu bar
 STALL = 45  # seconds of a black screen before an open is called a failure
+STUCK = 8  # seconds a feature-length title may sit frozen at its end, just opened, before menus are given up
 FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
 CACHE_GB = (0, 1, 2, 5, 10, 20, 50)  # disk cache sizes offered; 2 unless changed
@@ -123,6 +124,7 @@ class Player(QMainWindow):
         self.osd_until = self.busy_until = 0.0
         self.buffering = False
         self.deadline = 0.0
+        self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -536,6 +538,7 @@ class Player(QMainWindow):
         self.mp.play()
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
+        self.opened_at, self.stuck_at = time.monotonic(), (-1, 0.0)
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -566,7 +569,8 @@ class Player(QMainWindow):
             elif pct >= 100 and self.buffering:
                 self.flash("")
         elif name == "vout":
-            self.flash("")
+            self.flash(self.notice, seconds=8) if self.notice else self.flash("")
+            self.notice = None
         elif name == "end":
             if self.deadline:  # reached the end without ever showing a frame
                 self.fail("This wouldn't play")
@@ -703,6 +707,8 @@ class Player(QMainWindow):
             elif now > self.deadline:
                 self.fail("Nothing played from this")
                 return
+        if self.disc == "bluray" and self.use_menus:
+            self.watch_menu(now)
         pos = QCursor.pos()
         if pos != self.last_pos:
             self.last_pos = pos
@@ -731,6 +737,19 @@ class Player(QMainWindow):
                 self.seek.setValue(int(self.mp.get_position() * 10000))
                 self.pos_lbl.setText(fmt(t))
             self.len_btn.setText(f"-{fmt(length - t)}" if self.remaining and length > 0 else fmt(length))
+
+    def watch_menu(self, now):
+        """libbluray can't run some studios' BD-J menus (Disney 3D among them): the player jumps to
+        the end of a feature-length title the moment the disc opens and freezes there, still
+        reporting it plays. A still menu never looks like that, so fall back to the main title."""
+        t = self.mp.get_time()
+        stuck = (self.mp.get_length() > 10 * 60_000 and self.mp.get_position() >= 0.999
+                 and now - self.opened_at < 120)
+        if not stuck or t != self.stuck_at[0]:
+            self.stuck_at = (t, now)
+        elif now - self.stuck_at[1] > STUCK:
+            self.replay_main()
+            self.notice = "This disc's menu doesn't run here, so the main title is playing"
 
     def moveEvent(self, e):
         self.place()

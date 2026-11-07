@@ -42,6 +42,31 @@ class BufferingTests(unittest.TestCase):
         player.flash.assert_called_once_with("")
 
 
+class StuckMenuTests(unittest.TestCase):
+    def stuck(self, length, frozen_for, opened_ago=10):
+        now = time.monotonic()
+        player = waiting(opened_at=now - opened_ago, stuck_at=(length - 400, now - frozen_for), notice=None)
+        player.mp.get_length.return_value = length
+        player.mp.get_time.return_value = length - 400
+        player.mp.get_position.return_value = 1.0
+        Player.watch_menu(player, now)
+        return player
+
+    def test_a_feature_frozen_at_its_end_just_after_opening_falls_back_to_the_main_title(self):
+        player = self.stuck(9_111_800, frozen_for=9)
+        player.replay_main.assert_called_once()
+        self.assertIn("main title", player.notice)
+
+    def test_not_before_it_has_been_frozen_a_while(self):
+        self.stuck(9_111_800, frozen_for=2).replay_main.assert_not_called()
+
+    def test_a_short_menu_clip_holding_its_last_frame_is_left_alone(self):
+        self.stuck(45_000, frozen_for=60).replay_main.assert_not_called()
+
+    def test_a_film_that_really_reached_its_end_is_left_alone(self):
+        self.stuck(9_111_800, frozen_for=60, opened_ago=7200).replay_main.assert_not_called()
+
+
 class StallTests(unittest.TestCase):
     def test_a_black_screen_past_the_deadline_fails_the_open(self):
         player = waiting(deadline=time.monotonic() - 1, current="http://host/x.bin")
