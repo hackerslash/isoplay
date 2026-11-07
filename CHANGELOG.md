@@ -1,0 +1,21 @@
+# Changelog
+
+## Unreleased
+
+- Transport controls no longer stay pinned over a disc menu: a still menu reports "not playing",
+  which the auto-hide rule read as "keep the controls up"
+
+Known: disc menus cannot be clicked on macOS. libVLC embeds through `caopengllayer`, whose view
+gets no mouse-moved events from a Qt-owned window, so nothing highlights under the pointer.
+`--vout`/`:vout` are ignored when embedding, so the NSView-based output can't be selected.
+Arrow keys and Return navigate menus as before.
+
+## 0.3.0
+
+- Discs stored uncompressed in a `.zip` now stream in place, without unpacking
+- Links are identified by their first bytes, so extensionless download links work
+- Open Disc Folder…, with a chooser when a folder holds several rips
+- Fit, fill and stretch modes, and external subtitle files
+- Remove a single item from Recent by hovering its row
+- A source that won't play returns to the start screen with the reason, instead of a black screen
+- Recent only records what actually played

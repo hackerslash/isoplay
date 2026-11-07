@@ -673,7 +673,8 @@ class Player(QMainWindow):
         on_video = self.stack.currentWidget() is self.video
         playing = self.mp.is_playing()
         hovering = self.controls.isVisible() and self.controls.geometry().contains(pos)
-        show = active and on_video and (not playing or now - self.last_move < 2.2 or hovering)
+        busy = playing or (bool(self.disc) and self.use_menus)  # a still menu reports "not playing"
+        show = active and on_video and (not busy or now - self.last_move < 2.2 or hovering)
         self.controls.fade(show)
         self.back.fade(show)
         self.osd.fade(active and on_video and now < self.osd_until)
