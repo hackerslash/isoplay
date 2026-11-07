@@ -81,7 +81,8 @@ The track button holds audio and subtitle tracks, **Add Subtitle File…**, the 
 
 ## Run from source
 
-VLC must be installed on the system, since libVLC is not a Python package.
+VLC must be installed on the system, since libVLC is not a Python package. With a JDK 17+ present,
+`dev.py` also builds the same Java runtime the bundle ships, so BD-J menus behave as they will there.
 
 ```sh
 python3 dev.py                  # creates .venv, installs deps, starts the app

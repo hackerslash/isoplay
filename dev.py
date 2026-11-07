@@ -36,7 +36,20 @@ def main():
         return subprocess.run([PYTHON, "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT).returncode
     if subprocess.run([PYTHON, "-c", "import vlc"], cwd=ROOT, capture_output=True).returncode:
         sys.exit(VLC_HELP)
-    return subprocess.run([PYTHON, "run.py", *sys.argv[1:]], cwd=ROOT).returncode
+    return subprocess.run([PYTHON, "run.py", *sys.argv[1:]], cwd=ROOT, env=java_env()).returncode
+
+
+def java_env():
+    """The bundle's Java runtime, fonts included, so BD-J menus behave as they will once built."""
+    import build
+    if not (build.BUILD / "jre/lib/fonts/LucidaSansRegular.ttf").exists():
+        build.BUILD.mkdir(exist_ok=True)
+        try:
+            build.jre()
+        except (OSError, subprocess.CalledProcessError):
+            print("no JDK found: Java disc menus that draw text will stay black", flush=True)
+            return None
+    return {**os.environ, "JAVA_HOME": str(build.BUILD / "jre")}
 
 
 if __name__ == "__main__":

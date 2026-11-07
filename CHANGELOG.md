@@ -23,6 +23,8 @@
   were being swallowed silently
 - Transport controls no longer stay pinned over a disc menu: a still menu reports "not playing",
   which the auto-hide rule read as "keep the controls up"
+- Java (BD-J) menus that draw text no longer stay black: libbluray looks for the Lucida fonts the
+  JDK stopped shipping in 11, so the bundled runtime now carries DejaVu under those names
 
 Known: disc menus cannot be clicked on macOS. libVLC embeds through `caopengllayer`, whose view
 gets no mouse-moved events from a Qt-owned window, so nothing highlights under the pointer.

@@ -21,6 +21,17 @@ ROOT = Path(__file__).resolve().parent
 BUILD, DIST = ROOT / "build", ROOT / "dist"
 STAGE = BUILD / "vlc"
 JRE_MODULES = "java.base,java.desktop,java.rmi"  # jdeps on the libbluray jars
+DEJAVU_URL = ("https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/"
+              "dejavu-fonts-ttf-2.37.tar.bz2")
+# libbluray maps BD-J's default faces to the Lucida files the JDK stopped shipping in 11, and has no
+# fontconfig on macOS or Windows to fall back on, so a menu that draws text dies on a black screen.
+LUCIDA = {"LucidaSansRegular": "DejaVuSans", "LucidaSansDemiBold": "DejaVuSans-Bold",
+          "LucidaSansOblique": "DejaVuSans-Oblique", "LucidaSansDemiOblique": "DejaVuSans-BoldOblique",
+          "LucidaBrightRegular": "DejaVuSerif", "LucidaBrightDemiBold": "DejaVuSerif-Bold",
+          "LucidaBrightItalic": "DejaVuSerif-Italic", "LucidaBrightDemiItalic": "DejaVuSerif-BoldItalic",
+          "LucidaTypewriterRegular": "DejaVuSansMono", "LucidaTypewriterBold": "DejaVuSansMono-Bold",
+          "LucidaTypewriterOblique": "DejaVuSansMono-Oblique",
+          "LucidaTypewriterBoldOblique": "DejaVuSansMono-BoldOblique"}
 
 # Libraries every Linux desktop already has, or that must match the host (GPU/audio/glibc).
 LINUX_SKIP = ("linux-vdso", "ld-linux", "libc.so", "libm.so", "libdl.so", "libpthread", "librt.so",
@@ -106,8 +117,15 @@ def linux_deps(dest):
 def jre():
     java_home = os.environ.get("JAVA_HOME")
     jlink = str(Path(java_home) / "bin" / "jlink") if java_home else "jlink"
+    shutil.rmtree(BUILD / "jre", ignore_errors=True)
     run(jlink, "--add-modules", JRE_MODULES, "--strip-debug", "--no-man-pages", "--no-header-files",
         "--compress=2", "--output", BUILD / "jre")
+    fonts = BUILD / "jre/lib/fonts"
+    fonts.mkdir(exist_ok=True)
+    with tarfile.open(download(DEJAVU_URL, BUILD / "dejavu.tar.bz2")) as tar:
+        ttf = {Path(m.name).stem: m for m in tar.getmembers() if m.name.endswith(".ttf")}
+        for lucida, dejavu in LUCIDA.items():
+            (fonts / f"{lucida}.ttf").write_bytes(tar.extractfile(ttf[dejavu]).read())
 
 
 def icon_png():
@@ -129,7 +147,7 @@ def icon_png():
 
 def main():
     shutil.rmtree(DIST, ignore_errors=True)
-    for d in (STAGE, BUILD / "jre", BUILD / "pyinstaller"):
+    for d in (STAGE, BUILD / "pyinstaller"):
         shutil.rmtree(d, ignore_errors=True)
     BUILD.mkdir(exist_ok=True)
     {"darwin": vlc_macos, "win32": vlc_windows}.get(sys.platform, vlc_linux)()
