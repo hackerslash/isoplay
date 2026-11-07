@@ -28,6 +28,8 @@ from isoplay.widgets import (  # noqa: E402
 
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
 BADGE = 36  # shared height of the back control and the status bubble beside it
+INSET = 18
+TITLE_BAR = 28  # height macOS slides over a full-screen window, below the menu bar
 STALL = 45  # seconds of a black screen before an open is called a failure
 FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
@@ -641,8 +643,12 @@ class Player(QMainWindow):
         area = QRect(self.stack.mapToGlobal(QPoint(0, 0)), self.stack.size())
         w = min(520, area.width() - 40)
         self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 22 - 84, w, 84)
-        self.back.setGeometry(area.left() + 18, area.top() + 18, BADGE, BADGE)
-        self.osd.move(area.left() + 18 + BADGE + 10, area.top() + 18)
+        top = area.top() + INSET
+        if MAC and self.isFullScreen():  # the menu bar and title bar slide over this corner
+            screen = self.screen()
+            top += screen.availableGeometry().top() - screen.geometry().top() + TITLE_BAR
+        self.back.setGeometry(area.left() + INSET, top, BADGE, BADGE)
+        self.osd.move(area.left() + INSET + BADGE + 10, top)
         self.waiting.move(area.center().x() - self.waiting.width() // 2,
                           area.center().y() - self.waiting.height() // 2)
 

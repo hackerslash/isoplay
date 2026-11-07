@@ -13,6 +13,9 @@ MOD = "⌘" if MAC else "Ctrl+"
 
 INK, INK2, INK3 = "#f5f5f7", "rgba(235,235,245,0.62)", "rgba(235,235,245,0.38)"
 ICON = "#9e9ea6"  # SVG has no rgba(), so icons need a flat colour, not INK2/INK3
+# Rounded borders are drawn as separate arcs and edges that overlap where they meet, so a
+# translucent one composites over itself there and leaves bright dots. Keep every border opaque.
+RIM, RIM2 = "#34343a", "#2e2e33"
 CSS = f"""
 * {{ outline: none; }}
 QMainWindow {{ background: #000; }}
@@ -21,7 +24,7 @@ QMainWindow {{ background: #000; }}
 #appname {{ color: {INK}; font-size: 20px; font-weight: 600; }}
 #version, #muted {{ color: {INK3}; font-size: 12px; }}
 #section {{ color: {INK2}; font-size: 12px; font-weight: 600; }}
-#action {{ color: {INK}; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.07);
+#action {{ color: {INK}; background: rgba(255,255,255,0.06); border: 1px solid #242428;
     border-radius: 8px; padding: 0 14px; min-height: 38px; font-size: 13px; text-align: left; }}
 #action:hover {{ background: rgba(255,255,255,0.10); }}
 #action:pressed {{ background: rgba(255,255,255,0.14); }}
@@ -39,12 +42,12 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 #recentScroll QScrollBar::add-line:vertical, #recentScroll QScrollBar::sub-line:vertical {{ height: 0; }}
 #recentScroll QScrollBar::add-page:vertical, #recentScroll QScrollBar::sub-page:vertical {{ background: transparent; }}
 #empty {{ color: {INK3}; font-size: 13px; }}
-#panel {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; }}
 #forget {{ background: rgba(255,255,255,0.08); border: none; border-radius: 13px; }}
 #forget:hover {{ background: rgba(255,69,58,0.80); }}
 #forget:pressed {{ background: rgba(255,69,58,0.95); }}
 #problem {{ color: #ffb4ab; background: rgba(255,69,58,0.12); border: 1px solid #742925;
     border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-top: 14px; }}
+#panel {{ background: rgba(28,28,30,0.90); border: 1px solid {RIM2}; border-radius: 12px; }}
 #panel QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 4px; }}
 #panel QPushButton:hover {{ background: rgba(255,255,255,0.10); }}
 #panel QPushButton:pressed {{ background: rgba(255,255,255,0.16); }}
@@ -54,10 +57,10 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 QSlider::groove:horizontal {{ height: 3px; background: rgba(255,255,255,0.20); border-radius: 1px; }}
 QSlider::sub-page:horizontal {{ background: rgba(255,255,255,0.90); border-radius: 1px; }}
 QSlider::handle:horizontal {{ width: 11px; height: 11px; margin: -4px 0; border-radius: 5px; background: #fff; }}
-#back {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 9px; }}
-#back:hover {{ background: rgba(52,52,56,0.95); }}
-#back:pressed {{ background: rgba(68,68,72,0.95); }}
-#osd {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 9px; }}
+#back {{ background: rgba(22,22,24,0.72); border: 1px solid {RIM}; border-radius: 18px; }}
+#back:hover {{ background: rgba(58,58,62,0.92); border-color: #56565e; }}
+#back:pressed {{ background: rgba(78,78,82,0.95); }}
+#osd {{ background: rgba(22,22,24,0.72); border: 1px solid {RIM}; border-radius: 18px; }}
 #osd QLabel {{ color: {INK}; font-size: 13px; font-weight: 500; }}
 #loaderCaption {{ color: {INK}; font-size: 13px; font-weight: 500; background: transparent; }}
 QToolTip {{ color: {INK}; background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12); padding: 3px 6px; }}

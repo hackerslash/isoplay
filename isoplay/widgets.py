@@ -48,7 +48,7 @@ class Overlay(QWidget):
 class Bars(QWidget):
     """Radial bars with a highlight travelling smoothly around them."""
 
-    COUNT = 12
+    COUNT = 18
     TURNS = 1.1  # revolutions a second
 
     def __init__(self, size=76, weight=4):
