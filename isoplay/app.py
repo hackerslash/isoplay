@@ -27,6 +27,7 @@ from isoplay.widgets import (  # noqa: E402
 )
 
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
+BADGE = 36  # shared height of the back control and the status bubble beside it
 
 
 class Bridge(QObject):
@@ -94,8 +95,9 @@ class Player(QMainWindow):
         self.back = self.build_back()
         self.osd = Overlay(self, clickable=False)
         bubble = QFrame(self.osd, objectName="osd")
+        bubble.setFixedHeight(BADGE)
         row = QHBoxLayout(bubble)
-        row.setContentsMargins(11, 6, 12, 6)
+        row.setContentsMargins(12, 0, 14, 0)
         row.setSpacing(8)
         self.spinner = Spinner()
         self.osd_label = QLabel(styleSheet="background: transparent; border: none;")
@@ -237,7 +239,7 @@ class Player(QMainWindow):
                              focusPolicy=Qt.NoFocus, cursor=Qt.PointingHandCursor,
                              icon=svg_icon("back", 40), iconSize=QSize(20, 20), clicked=self.close_video)
         button.setAccessibleName("Back to the start screen")
-        button.setFixedSize(40, 40)
+        button.setFixedSize(BADGE, BADGE)
         layout = QVBoxLayout(overlay)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(button)
@@ -562,8 +564,8 @@ class Player(QMainWindow):
         area = QRect(self.stack.mapToGlobal(QPoint(0, 0)), self.stack.size())
         w = min(520, area.width() - 40)
         self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 22 - 84, w, 84)
-        self.back.setGeometry(area.left() + 18, area.top() + 18, 40, 40)
-        self.osd.move(area.left() + 70, area.top() + 18)
+        self.back.setGeometry(area.left() + 18, area.top() + 18, BADGE, BADGE)
+        self.osd.move(area.left() + 18 + BADGE + 10, area.top() + 18)
 
     def tick(self):
         if self.stack.currentWidget() is not self.video and not any(

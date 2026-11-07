@@ -48,10 +48,10 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 QSlider::groove:horizontal {{ height: 3px; background: rgba(255,255,255,0.20); border-radius: 1px; }}
 QSlider::sub-page:horizontal {{ background: rgba(255,255,255,0.90); border-radius: 1px; }}
 QSlider::handle:horizontal {{ width: 11px; height: 11px; margin: -4px 0; border-radius: 5px; background: #fff; }}
-#back {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; }}
+#back {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 9px; }}
 #back:hover {{ background: rgba(52,52,56,0.95); }}
 #back:pressed {{ background: rgba(68,68,72,0.95); }}
-#osd {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; }}
+#osd {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 9px; }}
 #osd QLabel {{ color: {INK}; font-size: 13px; font-weight: 500; }}
 QToolTip {{ color: {INK}; background: #2c2c2e; border: 1px solid rgba(255,255,255,0.12); padding: 3px 6px; }}
 """
