@@ -85,25 +85,23 @@ class _MetadataImage(io.RawIOBase):
     def read(self, pos, size):
         end = min(pos + size, self.size)
         out = bytearray(max(0, end - pos))
-        # Files never overlap metadata pages. Serialize seek+read because each
-        # file reference keeps a cursor shared by concurrent HTTP readers.
-        with self.lock:
-            i = max(0, bisect.bisect_right(self.starts, pos) - 1)
-            for start, length, fp in self.files[i:]:
-                if start >= end:
-                    break
-                a, b = max(pos, start), min(end, start + length)
-                if a < b:
-                    fp.seek(a - start)
-                    data = fp.read(b - a)
-                    if len(data) != b - a:
-                        raise OSError("short read in disc file")
-                    out[a - pos:b - pos] = data
-            for page in range(pos // 2048, (end + 2047) // 2048):
-                data = self.pages.get(page)
-                if data is not None:
-                    a, b = max(pos, page * 2048), min(end, (page + 1) * 2048)
-                    out[a - pos:b - pos] = data[a - page * 2048:b - page * 2048]
+        # Files never overlap metadata pages, and pread keeps no cursor, so readers
+        # do not have to queue behind each other's network fetches.
+        i = max(0, bisect.bisect_right(self.starts, pos) - 1)
+        for start, length, fp in self.files[i:]:
+            if start >= end:
+                break
+            a, b = max(pos, start), min(end, start + length)
+            if a < b:
+                data = fp.pread(a - start, b - a)
+                if len(data) != b - a:
+                    raise OSError("short read in disc file")
+                out[a - pos:b - pos] = data
+        for page in range(pos // 2048, (end + 2047) // 2048):
+            data = self.pages.get(page)
+            if data is not None:
+                a, b = max(pos, page * 2048), min(end, (page + 1) * 2048)
+                out[a - pos:b - pos] = data[a - page * 2048:b - page * 2048]
         return bytes(out)
 
     def close(self):
@@ -153,15 +151,14 @@ class _ExtentFile(io.RawIOBase):
         self.pos = (0 if whence == 0 else self.pos if whence == 1 else self.size) + offset
         return self.pos
 
-    def read(self, size=-1):
-        if size < 0:
-            size = self.size - self.pos
-        size = min(size, self.size - self.pos)
+    def pread(self, pos, size):
+        """Read without touching the cursor, so concurrent readers need no lock."""
+        size = min(size, self.size - pos)
         out = bytearray()
         while size > 0:
-            i = bisect.bisect_right(self.starts, self.pos) - 1
+            i = bisect.bisect_right(self.starts, pos) - 1
             offset, length = self.parts[i]
-            within = self.pos - self.starts[i]
+            within = pos - self.starts[i]
             count = min(size, length - within)
             if count >= 1 << 20 and hasattr(self.cache, "prefetch"):
                 self.cache.prefetch(offset + within)
@@ -169,9 +166,14 @@ class _ExtentFile(io.RawIOBase):
             if len(data) != count:
                 raise OSError("short read in disc extent")
             out += data
-            self.pos += count
+            pos += count
             size -= count
         return bytes(out)
+
+    def read(self, size=-1):
+        data = self.pread(self.pos, self.size - self.pos if size < 0 else size)
+        self.pos += len(data)
+        return data
 
 
 def iso_signature(data):
@@ -196,13 +198,10 @@ class _FileView(io.RawIOBase):
 
     def __init__(self, fp, name):
         self.fp, self.size, self.name = fp, fp.size, name
-        self.lock = threading.Lock()
         self.discs, self.disc_root, self.kind = (), None, None
 
     def read(self, pos, size):
-        with self.lock:  # concurrent HTTP readers share one cursor
-            self.fp.seek(pos)
-            return self.fp.read(size)
+        return self.fp.pread(pos, size)
 
     def close(self):
         self.fp.close()

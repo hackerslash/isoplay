@@ -55,6 +55,7 @@ def is_url(src):
 
 
 BLOCK = 512 << 10
+SERVE_CAP = 16 << 20  # most to answer one range with; players ask for the whole rest
 SNIFF_DISC = 4 << 20  # how far in to look for BDMV/VIDEO_TS, independent of the block size
 REDIRECTS = {301, 302, 303, 307, 308}
 
@@ -246,8 +247,11 @@ class Blocks:
 
     def prefetch(self, pos):
         first = pos // BLOCK
-        # Queue the requested block before its neighbours.
+        # Queue the requested block before its neighbours, and stop once enough is in flight:
+        # speculative blocks must never delay one a reader is already waiting on.
         for i in range(first, min(first + self.ahead + 1, (self.size + BLOCK - 1) // BLOCK)):
+            if i > first and len(self.pending) >= self.ahead:
+                return
             self.block(i)
 
     def close(self):
@@ -291,12 +295,19 @@ def _endpoint(cache):
                     end = min(int(m[2]), end) if m[2] else end
                 else:
                     start = max(0, size - int(m[2]))
+            # A player asks for the rest of the disc, reads a little and seeks away. Answering in
+            # full leaves a thread streaming gigabytes nobody reads, whose read-ahead then crowds
+            # out the seek that follows -- which the player reports as a seek failure.
+            end = min(end, start + SERVE_CAP - 1)
             if start >= size or end < start:
+                trace(f"serve {self.headers.get('Range', '')} -> 416 (size {size})")
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return None
+            trace(f"serve {self.headers.get('Range', 'whole file')} -> {206 if partial else 200} "
+                  f"{start}-{end}/{size}")
             self.send_response(206 if partial else 200)
             if partial:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
@@ -400,13 +411,16 @@ class RemoteFile(io.RawIOBase):
         self.pos = (0 if whence == 0 else self.pos if whence == 1 else self.size) + offset
         return self.pos
 
-    def read(self, size=-1):
-        size = min(self.size - self.pos if size < 0 else size, self.size - self.pos)
+    def pread(self, pos, size):
+        size = min(size, self.size - pos)
         if size <= 0:
             return b""
         # Reads arrive a block at a time, so the next ones have to be in flight already.
-        self.cache.prefetch(self.pos)
-        data = self.cache.read(self.pos, size)
+        self.cache.prefetch(pos)
+        return self.cache.read(pos, size)
+
+    def read(self, size=-1):
+        data = self.pread(self.pos, self.size - self.pos if size < 0 else size)
         self.pos += len(data)
         return data
 
