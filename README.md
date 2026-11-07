@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="96" alt="isoplay icon">
+  <img src="isoplay/assets/icon.svg" width="96" alt="isoplay icon">
 </p>
 
 <h1 align="center">isoplay</h1>
@@ -13,7 +13,7 @@
   <a href="../../releases/latest"><b>Download</b></a>
 </p>
 
-![isoplay playing Sintel](docs/screenshot.png)
+![isoplay playing a Blu-ray disc menu](docs/screenshot.png)
 
 ## Features
 
@@ -70,10 +70,31 @@ to v0.1.4 to get the built-in updater.
 - The host has to support HTTP `Range` requests.
 - macOS builds are Apple silicon only and not notarized.
 
+## Run from source
+
+VLC must be installed on the system, since libVLC is not a Python package.
+
+```sh
+python3 dev.py                  # creates .venv, installs deps, starts the app
+python3 dev.py path/or/url      # start on a file or link
+python3 dev.py --tests          # run the test suite
+```
+
+Nothing is installed outside `.venv` and no bundle is built. `python -m isoplay` and
+`python run.py` work too once the dependencies are present.
+
+```
+isoplay/        app package: media.py streams and probes, app.py is the window,
+                widgets.py and theme.py are the interface, updates*.py the updater
+tests/          unittest suite; test_isoplay.py covers the media layer with no Qt
+build.py        produces the self-contained bundle in dist/
+run.py          entry point for a checkout and for the frozen build
+```
+
 ## Build
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements-build.txt
 .venv/bin/python build.py    # needs a JDK 17+; output in dist/
 ```
 
@@ -83,5 +104,4 @@ libVLC log.
 
 ## License
 
-MIT. Bundles include VLC (LGPL/GPL) and OpenJDK (GPLv2 with Classpath Exception). Screenshot
-from [Sintel](https://durian.blender.org/) © Blender Foundation, CC BY 3.0.
+MIT. Bundles include VLC (LGPL/GPL) and OpenJDK (GPLv2 with Classpath Exception).
