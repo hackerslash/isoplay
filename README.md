@@ -59,7 +59,8 @@ to verify, install and open the new version on macOS, Windows or Linux. The prev
 until the replacement starts successfully, and is restored if startup fails.
 
 Use **Check for Updates…** on the welcome screen or in the track menu (also Help on macOS).
-Automatic checks can be disabled on the welcome screen. Source launches and read-only app folders
+The welcome screen's **Options** menu contains update checks and playback preferences.
+Automatic checks can be disabled there. Source launches and read-only app folders
 offer the release download page instead of replacing files. Older releases need one manual update
 to v0.1.4 to get the built-in updater.
 

@@ -43,6 +43,7 @@ jobs:
       - run: python test_isoplay.py
         if: runner.os == 'Linux'
       - run: python build.py
+      - run: python -m unittest -v test_welcome.py
       - run: python test_update_bundle.py
       - uses: actions/upload-artifact@v4
         with:

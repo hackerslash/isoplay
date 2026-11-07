@@ -6,6 +6,7 @@ failures; this test catches missing files, permissions, DLL locks and symlinks.
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,7 +27,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="isoplay-update-smoke-") as directory:
         target = Path(directory).resolve() / source.name
         shutil.copytree(source, target, symlinks=True)
-        info = updates.Release("v0.1.4", "Smoke test", "", name, "https://example.invalid/test",
+        tag = "v" + re.search(r'__version__ = "([^"]+)"', (root / "isoplay.py").read_text()).group(1)
+        info = updates.Release(tag, "Smoke test", "", name, "https://example.invalid/test",
                                archive.stat().st_size, hashlib.sha256(archive.read_bytes()).hexdigest())
         with patch.object(updates, "urlopen", side_effect=lambda *a, **k: archive.open("rb")):
             manifest = updates.prepare_update(info, target, resume_args=["--check"])

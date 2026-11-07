@@ -56,11 +56,11 @@ from PySide6.QtGui import (  # noqa: E402
 from PySide6.QtSvg import QSvgRenderer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
-    QMenu, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget,
+    QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 from update_ui import UpdateUI  # noqa: E402
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 UA = "Mozilla/5.0 isoplay"
 
 
@@ -339,10 +339,17 @@ QMainWindow {{ background: #000; }}
 #action:pressed {{ background: rgba(255,255,255,0.14); }}
 #link {{ color: {INK3}; background: transparent; border: none; font-size: 12px; padding: 0; }}
 #link:hover {{ color: {INK}; }}
+QToolButton#link {{ padding: 4px 16px 4px 4px; }}
+QToolButton#link::menu-indicator {{ subcontrol-position: right center; right: 2px; }}
 #row {{ background: transparent; border-radius: 7px; }}
 #row:hover {{ background: rgba(255,255,255,0.06); }}
 #rowtitle {{ color: {INK}; font-size: 13px; }}
 #rowmeta {{ color: {INK3}; font-size: 12px; }}
+#recentScroll, #recentContent {{ background: transparent; border: none; }}
+#recentScroll QScrollBar:vertical {{ background: transparent; width: 6px; margin: 4px 0; }}
+#recentScroll QScrollBar::handle:vertical {{ background: {INK3}; border-radius: 3px; min-height: 24px; }}
+#recentScroll QScrollBar::add-line:vertical, #recentScroll QScrollBar::sub-line:vertical {{ height: 0; }}
+#recentScroll QScrollBar::add-page:vertical, #recentScroll QScrollBar::sub-page:vertical {{ background: transparent; }}
 #empty {{ color: {INK3}; font-size: 13px; }}
 QCheckBox {{ color: {INK2}; font-size: 12px; spacing: 8px; margin-left: 10px; }}
 QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.28);
@@ -476,19 +483,36 @@ class Spinner(QWidget):
             p.drawArc(r, start * 16, span * 16)
 
 
+class ElidedLabel(QLabel):
+    """Keep full text for accessibility; elide to the space actually allocated."""
+    def __init__(self, text, mode=Qt.ElideRight, **kwargs):
+        super().__init__(**kwargs)
+        self.full_text, self.mode = text, mode
+        self.setTextFormat(Qt.PlainText)
+        self.setText(text)
+        self.setAccessibleName(text)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.setText(self.fontMetrics().elidedText(self.full_text, self.mode, max(0, self.contentsRect().width())))
+
+
 class RecentRow(QFrame):
     def __init__(self, item, on_open):
         super().__init__(objectName="row", cursor=Qt.PointingHandCursor)
         self.src, self.on_open = item["src"], on_open
+        self.setMinimumHeight(60)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 7, 10, 7)
         lay.setHorizontalSpacing(12)
-        lay.setVerticalSpacing(1)
-        title = QLabel(objectName="rowtitle")
-        title.setText(title.fontMetrics().elidedText(item["name"], Qt.ElideMiddle, 360))
+        lay.setVerticalSpacing(4)
+        title = ElidedLabel(item["name"], mode=Qt.ElideMiddle, objectName="rowtitle")
         meta = " · ".join(x for x in (KIND.get(item.get("kind")), origin(item["src"])) if x)
         lay.addWidget(title, 0, 0)
-        lay.addWidget(QLabel(meta, objectName="rowmeta"), 1, 0)
+        lay.addWidget(ElidedLabel(meta, objectName="rowmeta"), 1, 0)
         lay.addWidget(QLabel(ago(item["ts"]), objectName="rowmeta"), 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
         lay.setColumnStretch(0, 1)
         self.setToolTip(item["src"])
@@ -670,19 +694,17 @@ class Player(QMainWindow):
 
     def build_welcome(self):
         page = QWidget(objectName="welcome")
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(32, 40, 32, 28)
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(32, 28, 32, 24)
         col = QVBoxLayout()
         col.setSpacing(0)
-        holder = QHBoxLayout()
-        holder.addStretch()
-        box = QWidget(fixedWidth=500)
+        box = QWidget()
+        box.setMaximumWidth(640)
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         box.setLayout(col)
-        holder.addWidget(box)
-        holder.addStretch()
-        outer.addStretch(2)
-        outer.addLayout(holder)
-        outer.addStretch(3)
+        outer.addStretch()
+        outer.addWidget(box, 1)
+        outer.addStretch()
 
         head = QHBoxLayout()
         head.setSpacing(14)
@@ -697,8 +719,18 @@ class Player(QMainWindow):
         head.addWidget(logo)
         head.addLayout(names)
         head.addStretch()
+        options = QToolButton(objectName="link", text="Options", cursor=Qt.PointingHandCursor)
+        options.setToolTip("Playback and update preferences")
+        options.setPopupMode(QToolButton.InstantPopup)
+        preferences = QMenu(options)
+        preferences.addAction(self.act_menus)
+        preferences.addAction(self.act_auto_updates)
+        preferences.addSeparator()
+        preferences.addAction(self.act_updates)
+        options.setMenu(preferences)
+        head.addWidget(options)
         col.addLayout(head)
-        col.addSpacing(28)
+        col.addSpacing(22)
 
         acts = QHBoxLayout()
         acts.setSpacing(10)
@@ -713,7 +745,7 @@ class Player(QMainWindow):
             row.addWidget(QLabel(key, objectName="muted", styleSheet="background:transparent;"))
             acts.addWidget(b)
         col.addLayout(acts)
-        col.addSpacing(30)
+        col.addSpacing(24)
 
         top = QHBoxLayout()
         top.setContentsMargins(10, 0, 10, 0)  # line up with the row text, whose hover fill is inset
@@ -724,26 +756,20 @@ class Player(QMainWindow):
         top.addWidget(self.clear_btn)
         col.addLayout(top)
         col.addSpacing(6)
-        self.recent_box = QVBoxLayout()
+        scroll = QScrollArea(objectName="recentScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setMinimumHeight(80)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget(objectName="recentContent")
+        self.recent_box = QVBoxLayout(content)
+        self.recent_box.setContentsMargins(0, 0, 8, 0)
         self.recent_box.setSpacing(0)
-        col.addLayout(self.recent_box)
-        col.addSpacing(22)
-        menus = QCheckBox("Start discs at their menu", cursor=Qt.PointingHandCursor)
-        menus.setChecked(self.act_menus.isChecked())
-        menus.setContentsMargins(10, 0, 0, 0)
-        menus.toggled.connect(self.act_menus.setChecked)
-        menus.toggled.connect(self.menus_changed)
-        self.act_menus.toggled.connect(menus.setChecked)
-        col.addWidget(menus)
-        automatic = QCheckBox("Check for updates automatically", cursor=Qt.PointingHandCursor)
-        automatic.setChecked(self.act_auto_updates.isChecked())
-        automatic.toggled.connect(self.act_auto_updates.setChecked)
-        automatic.toggled.connect(lambda value: self.settings.setValue("updates/automatic", value))
-        self.act_auto_updates.toggled.connect(automatic.setChecked)
-        col.addWidget(automatic)
-        update_link = QPushButton("Check for Updates…", objectName="link", cursor=Qt.PointingHandCursor)
-        update_link.clicked.connect(lambda: self.updater.check(manual=True))
-        col.addWidget(update_link, alignment=Qt.AlignLeft)
+        self.recent_box.setAlignment(Qt.AlignTop)
+        scroll.setWidget(content)
+        col.addWidget(scroll, 1)
         self.refresh_recent()
         return page
 
