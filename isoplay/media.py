@@ -443,6 +443,8 @@ def propfind(url):
             return r.read()
     except HTTPError as e:
         if e.code in (401, 403):
+            if urllib.parse.urlsplit(url).username:
+                raise NeedsCredentials("That share rejected the user name and password in the link") from None
             raise NeedsCredentials("That share needs a user name and password in the link") from None
         if e.code in (405, 501):
             raise OSError("That link isn't a WebDAV share") from None

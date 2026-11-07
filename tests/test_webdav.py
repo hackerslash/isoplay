@@ -146,6 +146,10 @@ class ShareTests(unittest.TestCase):
             media.prepare(self.open(require_auth=True))
         self.assertIn("user name and password", str(caught.exception))
 
+    def test_a_share_rejecting_the_credentials_says_so(self):
+        with self.assertRaisesRegex(OSError, "rejected"):
+            media.prepare(self.open(require_auth=True, user="me:wrong@"))
+
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
             webdav.walk("http://127.0.0.1:1/", lambda url: b"<html><br></html>")  # invalid XML
