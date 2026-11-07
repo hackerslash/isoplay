@@ -1,4 +1,5 @@
 """Locating, probing and streaming the thing the user asked to play. No Qt here."""
+import base64
 import http.client
 import io
 import os
@@ -25,6 +26,18 @@ DEBUG = bool(os.environ.get("ISOPLAY_DEBUG"))
 def trace(message):
     if DEBUG:
         print(f"[isoplay] {message}", file=sys.stderr, flush=True)
+
+
+def credentials(url):
+    """Basic auth header for a https://user:pass@host link, which WebDAV shares tend to need.
+
+    Derived from the live URL, so a redirect to another host drops them rather than leaking them.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if not parts.username:
+        return {}
+    raw = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
+    return {"Authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
 
 
 def is_url(src):
@@ -65,7 +78,7 @@ class Upstream:
         self._drop()
         parts = urllib.parse.urlsplit(url)
         factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-        connection = factory(parts.netloc, timeout=self.timeout)
+        connection = factory(parts.hostname, parts.port, timeout=self.timeout)  # netloc may carry user:pass
         self.local.held = (url, connection)
         with self.lock:
             self.connections.append(connection)
@@ -89,7 +102,7 @@ class Upstream:
             try:
                 connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, "")),
                                    headers={"Range": f"bytes={start}-{end}", "User-Agent": UA,
-                                            "Accept-Encoding": "identity"})
+                                            "Accept-Encoding": "identity", **credentials(url)})
                 response = connection.getresponse()
                 # Bounded: a server that ignores Range answers with the whole file, and some
                 # of those files are tens of gigabytes.
@@ -352,7 +365,7 @@ def _not_a_page(headers, head=b""):
 
 def probe(url):
     """One ranged read: "disc", "zip" or None, sniffed because download links rarely have an extension."""
-    req = Request(url, headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA})
+    req = Request(url, headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA, **credentials(url)})
     try:
         with urlopen(req, timeout=20) as r:
             if r.status not in (200, 206):

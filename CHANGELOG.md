@@ -10,6 +10,9 @@
   in an archive keeps its menus instead of being refused
 - Local ISO9660 Blu-rays get their menus too: they are republished as UDF like a linked one
   rather than handed to libbluray, which cannot read ISO9660
+- Links carrying credentials (`https://user:pass@host/disc.iso`) now authenticate, so WebDAV
+  shares and other protected hosts work. The user:pass was previously handed to DNS as part of
+  the hostname, so the link failed to resolve at all
 - A host that advertises `Accept-Ranges` and then answers with the whole file is now refused
   in seconds. The body read was unbounded, so such a link tried to buffer the entire file into
   memory before anything noticed the range had been ignored

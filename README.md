@@ -32,7 +32,8 @@ Blu-ray starts in seconds and never lands on disk.
   `.VOB` and `.DAT` parts joined back into one stream.
 - **Multi-disc images** open a chooser; switch later from **Discs in This Image** in the track menu.
 
-The host must support HTTP `Range` requests. Images must already be decrypted (no AACS, so no
+The host must support HTTP `Range` requests. A protected host works through a link that
+carries its credentials, as `https://user:pass@host/disc.iso`. Images must already be decrypted (no AACS, so no
 retail UHD as-is).
 
 Menus come from the engine that can navigate the format: libdvdnav for DVD, libbluray for
