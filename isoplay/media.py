@@ -10,10 +10,11 @@ from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
-from isoplay.disc_image import project_iso9660
+from isoplay.disc_image import project_iso9660, project_zip
 
 UA = "Mozilla/5.0 isoplay"
 
@@ -265,11 +266,27 @@ class RangeCache:
 VIDEO_EXT = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mts", ".wmv", ".flv",
              ".mpg", ".mpeg", ".vob", ".m3u8", ".mpd", ".mp3", ".flac", ".ogg", ".opus", ".wav", ".m4a"}
 DISC_EXT = {".iso", ".img", ".bin", ".udf"}
+ARCHIVE_EXT = {".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".r00", ".001", ".part", ".torrent"}
+KNOWN_EXT = VIDEO_EXT | DISC_EXT | ARCHIVE_EXT | {".zip"}
+BARE_HOST = re.compile(r"[\w-]+(\.[\w-]+)+(/.*)?")
+DEAD = {401, 402, 403, 404, 410, 451}  # the link is wrong; other 4xx may just be an unloved Range
+SNIFF = 32776  # enough to reach the volume descriptor at sector 16
+PLAIN = (None, None, (), None)  # kind, proxy, disc roots, chosen root: hand it straight to the player
 
 
 def suffix(src):
     path = urllib.parse.urlparse(src).path if is_url(src) else src
     return Path(urllib.parse.unquote(path)).suffix.lower()
+
+
+def normalize(src):
+    """A bare host like google.com is a link with the scheme left off, not a missing file."""
+    src = src.strip()
+    if is_url(src) or Path(src).exists():
+        return src
+    if BARE_HOST.fullmatch(src) and ("/" in src or suffix(src) not in KNOWN_EXT):
+        return "https://" + src
+    return src
 
 
 def iso_signature(data):
@@ -285,45 +302,108 @@ def disc_kind(data):
     return None
 
 
-def sniff(url):
+def _not_a_page(headers, head=b""):
+    if (headers.get_content_type() in ("text/html", "application/xhtml+xml")
+            or head.lstrip()[:5].lower() in (b"<!doc", b"<html")):
+        raise OSError("That's a web page, not a video file")
+
+
+def probe(url):
+    """One ranged read: "disc", "zip" or None, sniffed because download links rarely have an extension."""
+    req = Request(url, headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA})
     try:
-        req = Request(url, headers={"Range": "bytes=32768-32775", "User-Agent": UA})
         with urlopen(req, timeout=20) as r:
-            return r.status == 206 and iso_signature(b"\0" * 32768 + r.read(8))
-    except OSError:
-        return False
+            if r.status not in (200, 206):
+                return None
+            head = r.read(SNIFF)
+            _not_a_page(r.headers, head)
+    except HTTPError as e:
+        if e.code in DEAD or e.code >= 500:
+            raise OSError("That link is no longer available") from None
+        _not_a_page(e.headers)  # a 416 on a web page still means the link is not a video
+        return None  # the server dislikes the probe, not the link; let the player try
+    except URLError:
+        raise OSError("Couldn't reach that server") from None
+    except TimeoutError:
+        raise OSError("That server didn't respond") from None
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+        return "zip"
+    for magic, name in ((b"Rar!", ".rar"), (b"7z\xbc\xaf", ".7z"), (b"\xfd7zXZ", ".xz")):
+        if head.startswith(magic):
+            raise OSError(f"isoplay can't open {name} archives")
+    return "disc" if iso_signature(head) else None
+
+
+DEPTH = 2  # folders to descend looking for discs: a rip of several discs is rarely deeper
+
+
+def disc_folders(path):
+    """Every DVD or Blu-ray folder at or under path: {folder to hand libVLC: kind}."""
+    found, stack = {}, [(path, 0)]
+    while stack:
+        here, level = stack.pop()
+        if (here / "BDMV").is_dir():
+            found[here] = "bluray"
+        elif (here / "VIDEO_TS").is_dir():
+            found[here] = "dvd"
+        elif level < DEPTH:
+            stack += [(child, level + 1) for child in sorted(here.iterdir()) if child.is_dir()]
+    return found
+
+
+def _folder(path, disc_root):
+    if path.name.upper() in ("BDMV", "VIDEO_TS"):
+        path = path.parent  # the disc is the folder holding it
+    discs = disc_folders(path)
+    if not discs:
+        videos = [f for f in path.iterdir() if f.is_file() and suffix(f.name) in VIDEO_EXT]
+        if len(videos) == 1:
+            return (str(videos[0]), *PLAIN)
+        raise OSError("No DVD or Blu-ray in that folder")
+    roots = tuple(sorted(str(d) for d in discs))
+    root = disc_root if disc_root in roots else roots[0]
+    kind = discs[Path(root)]
+    return kind + Path(root).as_uri()[4:], kind, None, roots, root
+
+
+def _streamed(proxy, kind):
+    view = proxy.view
+    return proxy.mrl, kind, proxy, view.discs if view else (), view.disc_root if view else None
 
 
 def prepare(src, disc_root=None):
-    """How libVLC should open src: (mrl, "bluray" | "dvd" | None, RangeCache | None). Blocks on I/O."""
+    """How libVLC should open src: (mrl, kind, RangeCache | None, disc roots, chosen root). Blocks on I/O."""
     ext = suffix(src)
+    if ext in ARCHIVE_EXT:
+        raise OSError(f"isoplay can't open {ext} archives")
     if not is_url(src):
         p = Path(src)
+        if not p.exists():
+            raise OSError("That file isn't there any more")
         if p.is_dir():
-            for sub, kind in (("BDMV", "bluray"), ("VIDEO_TS", "dvd")):
-                if (p / sub).is_dir() or (p.name.upper() == sub):
-                    root = p if (p / sub).is_dir() else p.parent
-                    return ("bluray" if kind == "bluray" else "dvd") + root.as_uri()[4:], kind, None
-            return src, None, None
+            return _folder(p, disc_root)
+        if ext == ".zip":
+            raise OSError("Zipped discs only stream from a link. Extract this one first")
         if ext in VIDEO_EXT:
-            return src, None, None
-        with open(src, "rb") as f:
+            return (src, *PLAIN)
+        with open(p, "rb") as f:
             data = f.read(BLOCK)
-        return src, (disc_kind(data) if iso_signature(data) else None), None
-    if ext in VIDEO_EXT or (ext not in DISC_EXT and not sniff(src)):
-        return src, None, None
+        return src, (disc_kind(data) if iso_signature(data) else None), None, (), None
+    found = probe(src)
+    if not found:
+        return (src, *PLAIN)
     proxy = RangeCache(src)
     try:
+        if found == "zip":
+            proxy.view = project_zip(proxy, root=disc_root)
+            return _streamed(proxy, proxy.view.kind)
         data = proxy.read(0, BLOCK)
-        if not iso_signature(data):
-            proxy.close()
-            return src, None, None
-        kind = disc_kind(data)
         udf = any(data[s * 2048 + 1:s * 2048 + 6] in (b"BEA01", b"NSR02", b"NSR03")
                   for s in range(16, 32))
+        kind = disc_kind(data)
         if kind == "bluray" and not udf:
             proxy.view = project_iso9660(proxy, root=disc_root)
-        return proxy.mrl, kind, proxy
+        return _streamed(proxy, kind)
     except Exception:
         proxy.close()
         raise

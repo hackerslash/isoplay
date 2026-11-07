@@ -35,8 +35,8 @@ tmp = Path(tempfile.mkdtemp())
 (tmp / "Disc/BDMV").mkdir(parents=True)
 assert prepare(str(tmp / "bd.img"))[1] == "bluray"
 assert prepare(str(tmp / "dvd.iso"))[1] == "dvd"
-assert prepare(str(tmp / "film.mkv")) == (str(tmp / "film.mkv"), None, None)
-mrl, kind, _ = prepare(str(tmp / "Disc"))
+assert prepare(str(tmp / "film.mkv")) == (str(tmp / "film.mkv"), None, None, (), None)
+mrl, kind, *_ = prepare(str(tmp / "Disc"))
 assert kind == "bluray" and mrl.startswith("bluray:///"), mrl
 assert prepare(str(tmp / "Disc/BDMV"))[0] == mrl
 assert fmt(3_725_000) == "1:02:05" and fmt(65_000) == "1:05"
@@ -124,8 +124,8 @@ except OSError as e:
 alive.shutdown()
 
 media.BLOCK = 1 << 20
-url = f"http://127.0.0.1:{up.server_port}/download?id=7"  # no extension: sniffed, then proxied
-mrl, kind, proxy = prepare(url)
+url = f"http://127.0.0.1:{up.server_port}/download?id=7"  # no extension: probed, then proxied
+mrl, kind, proxy, *_ = prepare(url)
 assert kind == "dvd" and mrl.startswith("http://127.0.0.1:") and proxy
 proxy.close()
 print("ok")

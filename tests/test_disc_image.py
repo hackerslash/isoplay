@@ -3,6 +3,7 @@ import io
 import os
 import tempfile
 import unittest
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from unittest.mock import Mock, patch
@@ -13,7 +14,7 @@ import pycdlib
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from isoplay import media
 from isoplay.app import Player
-from isoplay.disc_image import CacheFile, project_iso9660
+from isoplay.disc_image import CacheFile, project_iso9660, project_zip
 from PySide6.QtWidgets import QApplication, QMenu
 
 
@@ -66,16 +67,69 @@ def fixture(large=False, udf=False, nested=True):
     return fp
 
 
+def zip_fixture(names, compress=zipfile.ZIP_STORED):
+    fp = tempfile.TemporaryFile()
+    with zipfile.ZipFile(fp, "w", compress) as z:
+        for name in names:
+            z.writestr(name, b"\0" * 4096)
+    return fp
+
+
+class ZipProjectionTests(unittest.TestCase):
+    DVD = ["Movie Rip/VIDEO_TS.IFO", "Movie Rip/VTS_01_0.IFO", "Movie Rip/VTS_01_1.VOB", "Movie Rip/notes.txt"]
+
+    def test_loose_dvd_files_are_republished_under_video_ts(self):
+        with zip_fixture(self.DVD) as fp:
+            view = project_zip(FileCache(fp))
+        self.assertEqual(view.kind, "dvd")
+        self.assertEqual(view.disc_root, "Movie Rip")
+        self.assertEqual(sorted(next(view.udf.walk(udf_path="/VIDEO_TS"))[2]),
+                         ["VIDEO_TS.IFO", "VTS_01_0.IFO", "VTS_01_1.VOB"])  # notes.txt left out
+
+    def test_payload_is_read_straight_from_the_archive(self):
+        with zip_fixture(["Rip/VIDEO_TS.IFO", "Rip/VTS_01_1.VOB"]) as fp:
+            cache = FileCache(fp)
+            view = project_zip(cache)
+            fp.seek(0)
+            raw = fp.read()
+            # Every byte the image serves for a file must be the archive's own bytes, uncopied.
+            for start, length, _ in view.files:
+                self.assertEqual(view.read(start, length), b"\0" * 4096)
+            self.assertLess(view.size, len(raw) + (1 << 20))
+
+    def test_a_compressed_disc_is_refused_rather_than_half_played(self):
+        with zip_fixture(self.DVD, zipfile.ZIP_DEFLATED) as fp:
+            with self.assertRaises(OSError) as caught:
+                project_zip(FileCache(fp))
+        self.assertIn("compressed", str(caught.exception))
+
+    def test_a_zip_without_a_disc_is_refused(self):
+        with zip_fixture(["holiday/clip.mp4"]) as fp:
+            with self.assertRaises(OSError) as caught:
+                project_zip(FileCache(fp))
+        self.assertIn("No DVD or Blu-ray", str(caught.exception))
+
+    def test_every_disc_in_the_archive_is_offered(self):
+        with zip_fixture(["A/VIDEO_TS.IFO", "A/VTS_01_1.VOB", "B/BDMV/index.bdmv",
+                          "B/BDMV/STREAM/00001.m2ts"]) as fp:
+            view = project_zip(FileCache(fp))
+        self.assertEqual(view.discs, ("A", "B"))
+        with zip_fixture(["A/VIDEO_TS.IFO", "B/BDMV/index.bdmv"]) as fp:
+            picked = project_zip(FileCache(fp), root="B")
+        self.assertEqual((picked.kind, picked.disc_root), ("bluray", "B"))
+
+
 class ProjectionTests(unittest.TestCase):
     def test_opening_menu_only_for_multiple_discs(self):
         for roots in (("/FEATURE", "/BONUS"), ("",), None):
             with self.subTest(roots=roots):
-                view = SimpleNamespace(discs=roots, disc_root=roots[0]) if roots else None
-                proxy = SimpleNamespace(view=view) if roots else None
+                proxy = SimpleNamespace(view=object()) if roots else None
                 player = SimpleNamespace(token=1, ask_disc=True, current="image.iso", use_menus=True,
                                          chooser=Mock(), stack=Mock(), mp=Mock(), vlc=Mock(),
-                                         remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock())
-                result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy)
+                                         remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock(),
+                                         apply_fit=Mock())
+                result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy,
+                          roots or (), roots[0] if roots else None)
                 Player.start(player, 1, result)
                 if roots and len(roots) > 1:
                     player.mp.play.assert_not_called()
@@ -90,7 +144,7 @@ class ProjectionTests(unittest.TestCase):
                     player.mp.play.assert_called_once()
 
     def test_choosing_default_disc_starts_without_asking_again(self):
-        result = ("http://127.0.0.1/disc.iso", "bluray", None)
+        result = ("http://127.0.0.1/disc.iso", "bluray", None, ("/FEATURE",), "/FEATURE")
         player = SimpleNamespace(pending_disc=(1, result), disc_root="/FEATURE", stack=Mock(),
                                  video=object(), start=Mock(), play=Mock())
         Player.choose_disc(player, "/FEATURE")
@@ -140,8 +194,7 @@ class ProjectionTests(unittest.TestCase):
         menu = QMenu()
         calls = []
         player = SimpleNamespace(
-            proxy=SimpleNamespace(view=SimpleNamespace(discs=("/THE_ODYSSEY", "/SPECIAL_FEATURES"))),
-            disc_root="/THE_ODYSSEY", current="https://example.com/container.iso", use_menus=True,
+            discs=("/THE_ODYSSEY", "/SPECIAL_FEATURES"), disc_root="/THE_ODYSSEY", current="https://example.com/container.iso", use_menus=True,
             play=lambda src, **options: calls.append((src, options)),
         )
         player.switch_disc = lambda root: Player.switch_disc(player, root)
@@ -208,8 +261,9 @@ class ProjectionTests(unittest.TestCase):
                 response = Response(data[start:end + 1])
                 response.headers = {"Content-Range": f"bytes {start}-{end}/{len(data)}"}
                 return response
-            with patch.object(media, "ThreadingHTTPServer", Server), patch.object(media.RangeCache, "_get", get):
-                _, kind, cache = media.prepare("https://example.com/container.iso")
+            with patch.object(media, "ThreadingHTTPServer", Server), patch.object(media.RangeCache, "_get", get), \
+                    patch.object(media, "probe", lambda url: "disc"):
+                _, kind, cache, _, _ = media.prepare("https://example.com/container.iso")
             try:
                 self.assertEqual(kind, "bluray")
                 self.assertIsNotNone(cache.view)

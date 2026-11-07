@@ -1,12 +1,14 @@
-"""Present ISO9660 Blu-ray folders as a seekable UDF image, without copying video.
+"""Present a disc buried in an ISO9660 image or a zip as a seekable UDF image.
 
-libbluray reads UDF images and BDMV directories, not ISO9660 containers. Some
-downloads also wrap multiple discs in folders. Keep their bytes in the upstream
-cache and generate only the selected disc's filesystem metadata in memory.
+libbluray reads UDF, not ISO9660 or zip, and libdvdread wants VIDEO_TS at the root.
+Only the chosen disc's filesystem metadata is generated, in memory; the video stays
+in the upstream cache and is never copied.
 """
 import bisect
 import io
+import struct
 import threading
+import zipfile
 
 import pycdlib
 
@@ -123,14 +125,12 @@ class _MappedUDF(pycdlib.PyCdlib):
 
 
 class _ExtentFile(io.RawIOBase):
-    """One ISO9660 file, including every Level 3 multi-extent record."""
+    """One file of the source image, as one or more (offset, length) spans of it."""
 
-    def __init__(self, cache, records):
+    def __init__(self, cache, spans):
         self.cache, self.pos = cache, 0
         self.parts, self.starts, self.size = [], [], 0
-        for record in records:
-            offset = record.extent_location() * 2048
-            length = record.data_length
+        for offset, length in spans:
             if offset < 0 or offset + length > cache.size:
                 raise OSError("disc file extends beyond the image")
             self.starts.append(self.size)
@@ -203,7 +203,8 @@ def project_iso9660(cache, root=None):
                     todo.append((child, record))
                 else:
                     files.setdefault(child, []).append(record)
-        streams = {path: _ExtentFile(cache, records) for path, records in files.items()}
+        streams = {path: _ExtentFile(cache, [(r.extent_location() * 2048, r.data_length) for r in records])
+                   for path, records in files.items()}
         candidates = {}
         for path, fp in streams.items():
             parent, _, name = path.rpartition("/")
@@ -217,22 +218,88 @@ def project_iso9660(cache, root=None):
             root = discs[0]
         elif root not in candidates:
             raise ValueError("The selected disc folder is not in this image")
-        udf = _MappedUDF()
-        udf.new(interchange_level=3, udf="2.60", vol_ident="ISOPLAY")
-        for path in sorted(directories, key=lambda p: (p.count("/"), p)):
-            if path.startswith(root + "/"):
-                udf.add_directory(udf_path=path[len(root):])
-        handles = []
-        for path, fp in sorted(streams.items()):
-            if path.startswith(root + "/"):
-                handles.append(fp)
-                udf.add_fp(fp, fp.size, udf_path=path[len(root):])
-        view = _MetadataImage()
-        udf.write_fp(view)
-        view.files.sort(key=lambda entry: entry[0])
-        view.starts = [entry[0] for entry in view.files]
-        view.udf, view.handles = udf, handles
-        view.discs, view.disc_root = discs, root
-        return view
+        inside = {path[len(root):]: fp for path, fp in streams.items() if path.startswith(root + "/")}
+        return _build_udf(inside, [p[len(root):] for p in directories if p.startswith(root + "/")],
+                          discs, root, "bluray")
     finally:
         original.close()
+
+
+def _build_udf(streams, directories, discs, root, kind):
+    udf = _MappedUDF()
+    udf.new(interchange_level=3, udf="2.60", vol_ident="ISOPLAY")
+    for path in sorted(directories, key=lambda p: (p.count("/"), p)):
+        udf.add_directory(udf_path=path)
+    handles = []
+    for path, fp in sorted(streams.items()):
+        handles.append(fp)
+        udf.add_fp(fp, fp.size, udf_path=path)
+    view = _MetadataImage()
+    udf.write_fp(view)
+    view.files.sort(key=lambda entry: entry[0])
+    view.starts = [entry[0] for entry in view.files]
+    view.udf, view.handles = udf, handles
+    view.discs, view.disc_root, view.kind = discs, root, kind
+    return view
+
+
+DVD_EXT = (".IFO", ".BUP", ".VOB")
+
+
+def _stored_spans(cache, archive):
+    """(offset, length) of each uncompressed entry's payload, from its local header."""
+    spans = {}
+    for info in archive.infolist():
+        if info.is_dir() or info.compress_type != zipfile.ZIP_STORED or info.flag_bits & 0x1:
+            continue
+        head = cache.read(info.header_offset, 30)
+        if head[:4] != b"PK\x03\x04":
+            continue
+        name_len, extra_len = struct.unpack("<HH", head[26:30])
+        spans[info.filename] = (info.header_offset + 30 + name_len + extra_len, info.file_size)
+    return spans
+
+
+def _zip_discs(names):
+    """{root: (kind, {path in the image: entry name})}. DVDs move to /VIDEO_TS, the only place
+    libdvdread looks, whatever folder they were zipped in."""
+    found = {}
+    for name in names:
+        low = name.lower()
+        if low.endswith("bdmv/index.bdmv"):
+            root = name[:-len("BDMV/index.bdmv")].rstrip("/")
+            prefix = root + "/" if root else ""
+            found[root] = ("bluray", {"/" + n[len(prefix):]: n for n in names
+                                      if n.startswith(prefix) and not n.endswith("/")})
+        elif low.endswith("video_ts.ifo"):
+            root = name.rpartition("/")[0]
+            prefix = root + "/" if root else ""
+            found[root] = ("dvd", {"/VIDEO_TS/" + n[len(prefix):].upper(): n for n in names
+                                   if n.startswith(prefix) and "/" not in n[len(prefix):]
+                                   and n.upper().endswith(DVD_EXT)})
+    return found
+
+
+def project_zip(cache, root=None):
+    """Present a disc folder stored inside a zip as a UDF image, without unpacking it."""
+    with zipfile.ZipFile(CacheFile(cache)) as archive:
+        spans = _stored_spans(cache, archive)
+        found = _zip_discs(archive.namelist())
+    if not found:
+        raise OSError("No DVD or Blu-ray in that zip")
+    discs = tuple(sorted(found))
+    if root is None:
+        root = max(discs, key=lambda d: sum(spans.get(n, (0, 0))[1] for n in found[d][1].values()))
+    elif root not in found:
+        raise ValueError("The selected disc folder is not in this image")
+    kind, layout = found[root]
+    if any(name not in spans for name in layout.values()):
+        raise OSError("That zip is compressed, so the disc can't be streamed. Extract it first")
+    streams = {path: _ExtentFile(cache, [spans[name]]) for path, name in layout.items()}
+    directories = set()
+    for path in streams:
+        parent = path.rpartition("/")[0]
+        while parent:
+            directories.add(parent)
+            parent = parent.rpartition("/")[0]
+    return _build_udf(streams, sorted(directories), discs, root, kind)
