@@ -201,7 +201,9 @@ class Player(QMainWindow):
             sizes.addAction(item)
         menu.addSeparator()
         clear = menu.addAction("Clear Disk Cache", self.clear_cache)
-        menu.aboutToShow.connect(lambda: clear.setText(f"Clear Disk Cache ({media.DISK.used() / GB:.1f} GB)"))
+        # The running total, not a scan: a large cache is tens of thousands of files to stat.
+        menu.aboutToShow.connect(lambda: clear.setText(
+            "Clear Disk Cache" if media.DISK.size is None else f"Clear Disk Cache ({media.DISK.size / GB:.1f} GB)"))
         return menu
 
     def set_cache(self, gb):

@@ -2,6 +2,7 @@
 import base64
 import http.client
 import io
+import itertools
 import os
 import re
 import socket
@@ -197,9 +198,6 @@ class Memory:
     def __contains__(self, key):
         return key in self.items
 
-    def __len__(self):
-        return len(self.items)
-
     def get(self, key):
         with self.lock:
             data = self.items.get(key)
@@ -217,6 +215,7 @@ class Memory:
 
 
 DISK = None  # a DiskCache the app sets up; blocks a reader asked for outlive the play in it
+TAGS = itertools.count()
 RATE_WINDOW = 20  # seconds of fetches the arrival rate is measured over
 KEEP = 256 << 20  # RAM for one link's blocks, or for all of a share's together: the window and behind it
 RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
@@ -243,6 +242,7 @@ class Blocks:
                  streams=10, memory=None):
         self.url, self.bs, self.streams = url, bs or BLOCK, streams
         self.memory = memory or Memory(keep)
+        self.tag = next(TAGS)  # this file's keys in memory; the object itself would be a cycle holding 256 MiB
         # Read-ahead requests in flight, found as TCP finds a window: one more per round while there
         # is more to fetch than requests to fetch it, halved when the host throttles or fails.
         # Hosts differ wildly: one CDN refused a dozen connections, a share happily took 24.
@@ -283,7 +283,7 @@ class Blocks:
         """Block i from the disk cache into memory, if a past play left it there. Lock held."""
         data = DISK.get(self.disk_key, i) if DISK else None
         if data is not None:
-            self.memory.put((self, i), data)
+            self.memory.put((self.tag, i), data)
         return data
 
     def _fetch(self, first, futures, store=True):
@@ -308,7 +308,7 @@ class Blocks:
                 self.arrivals.append((time.monotonic(), len(data)))
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             for k, part in enumerate(parts):
-                self.memory.put((self, first + k), part)
+                self.memory.put((self.tag, first + k), part)
                 if store and DISK:  # what a reader asked for; read-ahead of a film would flush the menus
                     DISK.put(self.disk_key, first + k, part)
             for future, part in zip(futures, parts):
@@ -350,14 +350,14 @@ class Blocks:
         with self.lock:
             i = first
             while i < last:
-                if (self, i) in self.memory or i in self.pending or self._disk(i) is not None:
+                if (self.tag, i) in self.memory or i in self.pending or self._disk(i) is not None:
                     i += 1
                     continue
                 if limit is not None and self.requests >= limit:
                     self.starved = True
                     return
                 j = i + 1
-                while (j < min(last, i + self.run) and (self, j) not in self.memory and j not in self.pending
+                while (j < min(last, i + self.run) and (self.tag, j) not in self.memory and j not in self.pending
                        and not (DISK and DISK.has(self.disk_key, j))):
                     j += 1
                 self._queue(i, j, pool, store)
@@ -365,7 +365,7 @@ class Blocks:
 
     def block(self, i):
         with self.lock:
-            data = self.memory.get((self, i))
+            data = self.memory.get((self.tag, i))
             if data is None and i not in self.pending:
                 data = self._disk(i)
             if data is not None:

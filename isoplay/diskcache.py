@@ -49,7 +49,7 @@ class DiskCache:
         except OSError:
             return  # a full or read-only disk only costs the cache
         with self.lock:
-            self.size = (self.used() if self.size is None else self.size) + len(data)
+            self.size = self.used() if self.size is None else self.size + len(data)  # a scan counts it already
             if self.size > self.limit:
                 self._evict()
 
