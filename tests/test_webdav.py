@@ -1,0 +1,165 @@
+"""A disc folder on a WebDAV share, listed and projected without a socket to the outside."""
+import base64
+import io
+import os
+import threading
+import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pycdlib
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from isoplay import media, webdav
+from isoplay.disc_image import CacheFile
+
+DISC = {"Movie/BDMV/index.bdmv": b"INDX0200",
+        "Movie/BDMV/MovieObject.bdmv": b"MOBJ0200",
+        "Movie/BDMV/PLAYLIST/00000.mpls": b"MPLS0200",
+        "Movie/BDMV/STREAM/00001.m2ts": b"\x47" * 6144,
+        "Movie/readme.txt": b"notes"}
+AUTH = "Basic " + base64.b64encode(b"me:s3cret").decode()
+
+
+def share(files, require_auth=False):
+    """A WebDAV server answering PROPFIND and ranged GET for the given {path: bytes}."""
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def guard(self):
+            if require_auth and self.headers.get("Authorization") != AUTH:
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="stub"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+            return True
+
+        def here(self):
+            return urllib.parse.unquote(self.path).strip("/")
+
+        def do_PROPFIND(self):
+            if not self.guard():
+                return
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            prefix = self.here() + "/" if self.here() else ""
+            entries, seen = [f'<response><href>/{prefix}</href><propstat><prop>'
+                             f'<resourcetype><collection/></resourcetype></prop></propstat></response>'], set()
+            for path in files:
+                if not path.startswith(prefix):
+                    continue
+                rest = path[len(prefix):]
+                head, slash, _ = rest.partition("/")
+                if slash:
+                    if head in seen:
+                        continue
+                    seen.add(head)
+                    entries.append(f'<response><href>/{prefix}{head}/</href><propstat><prop>'
+                                   f'<resourcetype><collection/></resourcetype></prop></propstat></response>')
+                else:
+                    entries.append(f'<response><href>/{prefix}{rest}</href><propstat><prop>'
+                                   f'<resourcetype/><getcontentlength>{len(files[path])}'
+                                   f'</getcontentlength></prop></propstat></response>')
+            body = f'<?xml version="1.0"?><multistatus xmlns="DAV:">{"".join(entries)}</multistatus>'.encode()
+            self.send_response(207)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if not self.guard():
+                return
+            data = files.get(self.here())
+            if data is None:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            hits.append(self.here())
+            start, end = (int(x) for x in self.headers["Range"].removeprefix("bytes=").split("-"))
+            end = min(end, len(data) - 1)
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers()
+            self.wfile.write(data[start:end + 1])
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    server.daemon_threads = True
+    server.handle_error = lambda *a: None
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, hits
+
+
+class ShareTests(unittest.TestCase):
+    def open(self, files=DISC, require_auth=False, user=""):
+        server, hits = share(files, require_auth)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.hits = hits
+        return f"http://{user}127.0.0.1:{server.server_port}/"
+
+    def test_a_bluray_folder_on_a_share_is_projected_as_udf(self):
+        mrl, kind, proxy, discs, root = media.prepare(self.open())
+        self.addCleanup(proxy.close)
+        self.assertEqual((kind, discs, root), ("bluray", ("Movie",), "Movie"))
+        self.assertTrue(mrl.startswith("http://127.0.0.1:"))
+        iso = pycdlib.PyCdlib()
+        iso.open_fp(CacheFile(proxy.view))
+        self.addCleanup(iso.close)
+        with iso.open_file_from_iso(udf_path="/BDMV/index.bdmv") as index:
+            self.assertEqual(index.read(), b"INDX0200")
+        with iso.open_file_from_iso(udf_path="/BDMV/STREAM/00001.m2ts") as stream:
+            self.assertEqual(stream.read(8), b"\x47" * 8)
+        self.assertNotIn("Movie/readme.txt", self.hits)  # only the disc's own files are fetched
+
+    def test_listing_the_share_does_not_fetch_any_payload(self):
+        url = self.open()
+        files = webdav.walk(url, media.propfind)
+        self.assertEqual(sorted(files), sorted(DISC))
+        self.assertEqual(files["Movie/BDMV/STREAM/00001.m2ts"][1], 6144)
+        self.assertEqual(self.hits, [])
+
+    def test_a_share_without_a_disc_plays_its_largest_media_file(self):
+        url = self.open({"clips/small.mkv": b"a" * 16, "clips/big.mkv": b"b" * 64, "clips/notes.txt": b"x"})
+        mrl, kind, proxy, _, _ = media.prepare(url)
+        self.addCleanup(proxy.close)
+        self.assertEqual((kind, proxy.view.name), (None, "big.mkv"))
+        self.assertTrue(mrl.endswith("/big.mkv"))
+        self.assertEqual(proxy.view.read(0, 64), b"b" * 64)
+
+    def test_credentials_in_the_link_reach_both_the_listing_and_the_files(self):
+        url = self.open(require_auth=True, user="me:s3cret@")
+        _, kind, proxy, _, _ = media.prepare(url)
+        self.addCleanup(proxy.close)
+        self.assertEqual(kind, "bluray")
+        self.assertEqual(proxy.view.read(32768, 6), b"\x01CD001")
+
+    def test_a_share_needing_credentials_says_so(self):
+        with self.assertRaises(OSError) as caught:
+            media.prepare(self.open(require_auth=True))
+        self.assertIn("user name and password", str(caught.exception))
+
+    def test_a_plain_web_server_is_not_taken_for_a_share(self):
+        with self.assertRaisesRegex(OSError, "WebDAV"):
+            webdav.walk("http://127.0.0.1:1/", lambda url: b"<html><br></html>")  # invalid XML
+        with self.assertRaisesRegex(OSError, "WebDAV"):  # valid XML, but nothing DAV in it
+            webdav.walk("http://127.0.0.1:1/", lambda url: b"<html><body>hello</body></html>")
+
+    def test_the_walk_stops_rather_than_following_a_share_without_end(self):
+        def endless(url):
+            return (b'<?xml version="1.0"?><multistatus xmlns="DAV:">'
+                    b'<response><href>/deep/</href><propstat><prop>'
+                    b'<resourcetype><collection/></resourcetype></prop></propstat></response>'
+                    b'</multistatus>')
+        self.assertEqual(webdav.walk("http://host/", endless), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

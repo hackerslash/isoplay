@@ -397,6 +397,40 @@ def _zip_discs(names):
     return found
 
 
+def _assemble(found, root, discs, open_stream):
+    """Project one disc of {root: (kind, {path in the image: source})} as a UDF view."""
+    kind, layout = found[root]
+    streams = {path: open_stream(source) for path, source in layout.items()}
+    directories = set()
+    for path in streams:
+        parent = path.rpartition("/")[0]
+        while parent:
+            directories.add(parent)
+            parent = parent.rpartition("/")[0]
+    return _build_udf(streams, sorted(directories), discs, root, kind)
+
+
+def project_remote(files, root=None):
+    """A disc folder on a remote share, as a UDF view; its files stay where they are.
+
+    files is {path on the share: an open seekable reader}. With no disc folder on it,
+    the largest playable file is served as itself, as for a zip.
+    """
+    found = _zip_discs(files)
+    if not found:
+        name = max((p for p in files if _ext(p) in MEDIA_EXT),
+                   key=lambda p: (files[p].size, p), default=None)
+        if name is None:
+            raise OSError("No playable media on that share")
+        return _FileView(files[name], name.rpartition("/")[2])
+    discs = tuple(sorted(found))
+    if root is None:
+        root = max(discs, key=lambda d: sum(files[n].size for n in found[d][1].values()))
+    elif root not in found:
+        raise ValueError("The selected disc folder is not on this share")
+    return _assemble(found, root, discs, files.__getitem__)
+
+
 def project_zip(cache, root=None):
     """Present a disc folder stored inside a zip as a UDF image, without unpacking it.
 
@@ -419,14 +453,6 @@ def project_zip(cache, root=None):
         root = max(discs, key=lambda d: sum(spans.get(n, (0, 0))[1] for n in found[d][1].values()))
     elif root not in found:
         raise ValueError("The selected disc folder is not in this image")
-    kind, layout = found[root]
-    if any(name not in spans for name in layout.values()):
+    if any(name not in spans for name in found[root][1].values()):
         raise OSError("That zip is compressed, so the disc can't be streamed. Extract it first")
-    streams = {path: _ExtentFile(cache, [spans[name]]) for path, name in layout.items()}
-    directories = set()
-    for path in streams:
-        parent = path.rpartition("/")[0]
-        while parent:
-            directories.add(parent)
-            parent = parent.rpartition("/")[0]
-    return _build_udf(streams, sorted(directories), discs, root, kind)
+    return _assemble(found, root, discs, lambda name: _ExtentFile(cache, [spans[name]]))

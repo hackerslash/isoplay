@@ -16,8 +16,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
+from isoplay import webdav
 from isoplay.disc_image import (MEDIA_EXT, disc_kind, has_udf, iso_signature,  # noqa: F401 - re-exported
-                                 project_iso9660, project_media, project_zip)
+                                 project_iso9660, project_media, project_remote, project_zip)
 
 UA = "Mozilla/5.0 isoplay"
 DEBUG = bool(os.environ.get("ISOPLAY_DEBUG"))
@@ -38,6 +39,15 @@ def credentials(url):
         return {}
     raw = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
     return {"Authorization": "Basic " + base64.b64encode(raw.encode()).decode()}
+
+
+def bare(url):
+    """The link without its user:pass, which goes in a header instead of the host name."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.username:
+        return url
+    host = parts.hostname + (f":{parts.port}" if parts.port else "")
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
 
 def is_url(src):
@@ -135,7 +145,27 @@ class Upstream:
             connection.close()
 
 
-class RangeCache:
+class Served:
+    """Whatever `view` projects, offered to libVLC at a loopback URL."""
+
+    size = 0  # only the raw-image path reads this; a view carries its own length
+
+    def _serve(self):
+        self.view = None
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _endpoint(self))
+        self.server.daemon_threads = True
+        self.server.handle_error = lambda *a: None  # players drop connections on every seek
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.mrl = f"http://127.0.0.1:{self.server.server_port}/disc.iso"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        if self.view:
+            self.view.close()
+
+
+class RangeCache(Served):
     """Local HTTP endpoint for a remote disc image, backed by a block cache with parallel read-ahead.
 
     libbluray/dvdnav seek constantly and each upstream request costs ~1 s, so menus need the cache;
@@ -155,12 +185,7 @@ class RangeCache:
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
         self.pool = ThreadPoolExecutor(ahead + 2)
         self.size = self._size()
-        self.view = None
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.server.daemon_threads = True
-        self.server.handle_error = lambda *a: None  # players drop connections on every seek
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.mrl = f"http://127.0.0.1:{self.server.server_port}/disc.iso"
+        self._serve()
 
     def _get(self, start, end):
         return self.upstream.get(start, end)
@@ -227,10 +252,7 @@ class RangeCache:
             self.block(i)
 
     def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        if self.view:
-            self.view.close()
+        Served.close(self)
         self.pool.shutdown(wait=False, cancel_futures=True)
         self.upstream.close()
 
@@ -305,19 +327,14 @@ def _endpoint(cache):
     return H
 
 
-class LocalImage:
-    """An image on disk, projected and served like a remote one when libVLC can't open it directly."""
+class LocalImage(Served):
+    """An image on disk, projected and served when libVLC can't open it directly."""
 
     def __init__(self, path):
         self.fp = open(path, "rb")
         self.size = self.fp.seek(0, 2)
         self.lock = threading.Lock()
-        self.view = None
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _endpoint(self))
-        self.server.daemon_threads = True
-        self.server.handle_error = lambda *a: None
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.mrl = f"http://127.0.0.1:{self.server.server_port}/disc.iso"
+        self._serve()
 
     def read(self, pos, size):
         with self.lock:
@@ -325,11 +342,77 @@ class LocalImage:
             return self.fp.read(size)
 
     def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        if self.view:
-            self.view.close()
+        super().close()
         self.fp.close()
+
+
+class Share(Served):
+    """A disc assembled from the separate files of a remote share."""
+
+    def __init__(self, streams):
+        self.streams = streams
+        self._serve()
+
+    def close(self):
+        super().close()
+        for stream in self.streams.values():
+            stream.close()
+
+
+class RemoteFile(io.RawIOBase):
+    """One file on a share, read over ranged GETs."""
+    # ponytail: no read-ahead, one request per read; add it if sequential playback stalls
+
+    def __init__(self, url, size):
+        self.upstream, self.size, self.pos = Upstream(url), size, 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        self.pos = (0 if whence == 0 else self.pos if whence == 1 else self.size) + offset
+        return self.pos
+
+    def read(self, size=-1):
+        size = min(self.size - self.pos if size < 0 else size, self.size - self.pos)
+        if size <= 0:
+            return b""
+        with self.upstream.get(self.pos, self.pos + size - 1) as r:
+            data = r.read()
+        self.pos += len(data)
+        return data
+
+    def close(self):
+        self.upstream.close()
+        super().close()
+
+
+class NeedsCredentials(OSError):
+    """The share refused the listing until the link carries a user name and password."""
+
+
+def propfind(url):
+    """One level of a WebDAV collection, as a Multi-Status body."""
+    req = Request(bare(url), method="PROPFIND", data=webdav.PROPS,
+                  headers={"Depth": "1", "Content-Type": "text/xml; charset=utf-8",
+                           "User-Agent": UA, **credentials(url)})
+    try:
+        with urlopen(req, timeout=30) as r:
+            return r.read()
+    except HTTPError as e:
+        if e.code in (401, 403):
+            raise NeedsCredentials("That share needs a user name and password in the link") from None
+        if e.code in (405, 501):
+            raise OSError("That link isn't a WebDAV share") from None
+        raise OSError(f"That share answered {e.code}") from None
+    except URLError:
+        raise OSError("Couldn't reach that share") from None
 
 
 VIDEO_EXT = MEDIA_EXT | {".m3u8", ".mpd"}
@@ -365,7 +448,8 @@ def _not_a_page(headers, head=b""):
 
 def probe(url):
     """One ranged read: "disc", "zip" or None, sniffed because download links rarely have an extension."""
-    req = Request(url, headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA, **credentials(url)})
+    req = Request(bare(url), headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA,
+                                      **credentials(url)})
     try:
         with urlopen(req, timeout=20) as r:
             if r.status not in (200, 206):
@@ -429,6 +513,21 @@ def _streamed(proxy, kind):
     return proxy.mrl, kind, proxy, view.discs if view else (), view.disc_root if view else None
 
 
+def _share(url, disc_root):
+    """A WebDAV collection: list it, project the disc on it, serve that."""
+    files = webdav.walk(url, propfind)
+    if not files:
+        raise OSError("That share is empty")
+    streams = {path: RemoteFile(link, size) for path, (link, size) in files.items()}
+    image = Share(streams)
+    try:
+        image.view = project_remote(streams, root=disc_root)
+    except Exception:
+        image.close()
+        raise
+    return _streamed(image, image.view.kind)
+
+
 def _project(image, project):
     """Serve image through project, or close it and give up so the caller can fall back."""
     try:
@@ -473,7 +572,19 @@ def prepare(src, disc_root=None):
             if lifted:
                 return lifted
         return src, kind, None, (), None
-    found = probe(src)
+    if src.endswith("/"):  # a collection, not a file: only a share walk can make sense of it
+        return _share(src, disc_root)
+    try:
+        found = probe(src)
+    except OSError as page:
+        if "web page" not in str(page):
+            raise
+        try:  # a share's own index page looks like one, so give it a listing before giving up
+            return _share(src, disc_root)
+        except NeedsCredentials:
+            raise
+        except OSError:
+            raise page from None
     if not found:
         return (src, *PLAIN)
     proxy = RangeCache(src)

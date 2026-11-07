@@ -30,6 +30,8 @@ Blu-ray starts in seconds and never lands on disk.
 - **Everything else playable.** HD DVD, Video CD, DVD-Audio and plain rips of media files have no
   menu format libVLC can navigate, so their main title is served as itself — numbered `.EVO`,
   `.VOB` and `.DAT` parts joined back into one stream.
+- **WebDAV shares**, listed with PROPFIND and projected the same way: a `BDMV` or `VIDEO_TS`
+  folder on a share streams with its menus, nothing downloaded and nothing mounted.
 - **Multi-disc images** open a chooser; switch later from **Discs in This Image** in the track menu.
 
 The host must support HTTP `Range` requests. A protected host works through a link that
@@ -90,9 +92,9 @@ python3 dev.py --tests          # run the test suite
 Nothing is installed outside `.venv` and no bundle is built.
 
 ```
-isoplay/        media.py streams and probes links, disc_image.py projects ISO9660 and zip
-                discs as UDF or lifts a single title out, app.py is the window, widgets.py
-                and theme.py the interface
+isoplay/        media.py streams and probes links, webdav.py lists a share, disc_image.py
+                projects ISO9660, zip and remote discs as UDF or lifts a single title out,
+                app.py is the window, widgets.py and theme.py the interface
 tests/          unittest suite; test_isoplay.py covers the media layer with no Qt
 build.py        produces the self-contained bundle in dist/
 ```

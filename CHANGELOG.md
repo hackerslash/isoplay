@@ -10,6 +10,9 @@
   in an archive keeps its menus instead of being refused
 - Local ISO9660 Blu-rays get their menus too: they are republished as UDF like a linked one
   rather than handed to libbluray, which cannot read ISO9660
+- **WebDAV shares play like a folder.** Paste a share URL and the disc folder on it is listed
+  with PROPFIND and projected as UDF, so a `BDMV` or `VIDEO_TS` tree streams with its menus
+  without being downloaded or mounted. A share with no disc on it plays its largest media file
 - Links carrying credentials (`https://user:pass@host/disc.iso`) now authenticate, so WebDAV
   shares and other protected hosts work. The user:pass was previously handed to DNS as part of
   the hostname, so the link failed to resolve at all
