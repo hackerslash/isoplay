@@ -40,6 +40,9 @@ QToolButton#link::menu-indicator {{ image: none; width: 0; height: 0; }}
 #recentScroll QScrollBar::add-page:vertical, #recentScroll QScrollBar::sub-page:vertical {{ background: transparent; }}
 #empty {{ color: {INK3}; font-size: 13px; }}
 #panel {{ background: rgba(28,28,30,0.90); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; }}
+#forget {{ background: rgba(255,255,255,0.08); border: none; border-radius: 13px; }}
+#forget:hover {{ background: rgba(255,69,58,0.80); }}
+#forget:pressed {{ background: rgba(255,69,58,0.95); }}
 #problem {{ color: #ffb4ab; background: rgba(255,69,58,0.12); border: 1px solid #742925;
     border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-top: 14px; }}
 #panel QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 4px; }}
@@ -108,6 +111,8 @@ ICONS = {  # 24x24 path data (Material Symbols, Apache-2.0)
                 "l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84"
                 "c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32"
                 "c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
+    "close": "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59"
+             "L13.41 12 19 6.41z",
     "back": "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
 }
 

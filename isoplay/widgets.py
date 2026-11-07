@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from isoplay.media import DISC_EXT, ago, origin, suffix
-from isoplay.theme import BADGES, INK, OPTIONS_CSS, badge_art, svg_icon
+from isoplay.theme import BADGES, ICON, INK, OPTIONS_CSS, badge_art, svg_icon
 
 
 class Overlay(QWidget):
@@ -203,7 +203,7 @@ class MediaBadge(QWidget):
 
 
 class RecentRow(QFrame):
-    def __init__(self, item, on_open):
+    def __init__(self, item, on_open, on_forget):
         super().__init__(objectName="row", cursor=Qt.PointingHandCursor)
         self.src, self.on_open = item["src"], on_open
         self.setMinimumHeight(60)
@@ -214,12 +214,28 @@ class RecentRow(QFrame):
         lay.setVerticalSpacing(4)
         title = ElidedLabel(item["name"], mode=Qt.ElideMiddle, objectName="rowtitle")
         badge = MediaBadge(item.get("kind"), self.src)
+        self.when = QLabel(ago(item["ts"]), objectName="rowmeta")
+        self.forget = QPushButton(objectName="forget", cursor=Qt.PointingHandCursor, visible=False,
+                                  icon=svg_icon("close", 32, ICON), iconSize=QSize(13, 13),
+                                  toolTip="Remove from Recent", focusPolicy=Qt.NoFocus)
+        self.forget.setFixedSize(26, 26)
+        self.forget.setAccessibleName(f"Remove {item['name']} from Recent")
+        self.forget.clicked.connect(lambda: on_forget(self.src))
         lay.addWidget(badge, 0, 0, 2, 1)
         lay.addWidget(title, 0, 1)
         lay.addWidget(ElidedLabel(origin(self.src), objectName="rowmeta"), 1, 1)
-        lay.addWidget(QLabel(ago(item["ts"]), objectName="rowmeta"), 0, 2, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(self.when, 0, 2, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(self.forget, 0, 2, 2, 1, Qt.AlignRight | Qt.AlignVCenter)
         lay.setColumnStretch(1, 1)
         self.setToolTip(f"{badge.accessibleName()}\n{self.src}")
+
+    def enterEvent(self, e):
+        self.when.setVisible(False)
+        self.forget.setVisible(True)
+
+    def leaveEvent(self, e):
+        self.forget.setVisible(False)
+        self.when.setVisible(True)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):

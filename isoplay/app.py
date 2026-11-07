@@ -327,6 +327,10 @@ class Player(QMainWindow):
         items.insert(0, {"src": src, "name": display_name(src), "kind": kind, "ts": time.time()})
         self.settings.setValue("recent", json.dumps(items[:8]))
 
+    def forget(self, src):
+        self.settings.setValue("recent", json.dumps([i for i in self.recent() if i["src"] != src]))
+        self.refresh_recent()
+
     def clear_recent(self):
         self.settings.setValue("recent", "[]")
         self.refresh_recent()
@@ -338,7 +342,7 @@ class Player(QMainWindow):
                 w.deleteLater()
         items = self.recent()
         for item in items:
-            self.recent_box.addWidget(RecentRow(item, self.play))
+            self.recent_box.addWidget(RecentRow(item, self.play, self.forget))
         if not items:
             empty = QLabel(f"Nothing played yet. Drop a disc image or video anywhere in this window, "
                            f"or copy a link and press {MOD}V.", objectName="empty", wordWrap=True)

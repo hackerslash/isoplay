@@ -42,6 +42,7 @@ class WelcomeHarness:
         self.settings = Mock()
         self.updater = Mock()
         self.browse = self.ask_url = self.play = self.clear_recent = self.menus_changed = Mock()
+        self.forget = Mock()
         self.items = [{"src": f"https://very-long-source-name-{i}.workers.dev/a/movie.iso",
                        "name": "A very long movie filename with resolution and audio details.iso",
                        "kind": "bluray", "ts": time.time() - i * 600} for i in range(8)]
