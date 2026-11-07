@@ -165,8 +165,8 @@ class Served:
             self.view.close()
 
 
-class RangeCache(Served):
-    """Local HTTP endpoint for a remote disc image, backed by a block cache with parallel read-ahead.
+class Blocks:
+    """A block cache with parallel read-ahead over one remote file.
 
     libbluray/dvdnav seek constantly and each upstream request costs ~1 s, so menus need the cache;
     one upstream connection (~1.5 MB/s on worker hosts) is too slow for Blu-ray, so playback needs
@@ -179,13 +179,12 @@ class RangeCache(Served):
     """
     # ponytail: in-memory LRU (keep*BLOCK); switch to a disk cache if RAM gets tight
 
-    def __init__(self, url, keep=512, ahead=14):
+    def __init__(self, url, keep=512, ahead=14, size=None, pool=None):
         self.url, self.keep, self.ahead = url, keep, ahead
         self.upstream = Upstream(url)
         self.blocks, self.pending, self.lock = OrderedDict(), {}, threading.Lock()
-        self.pool = ThreadPoolExecutor(ahead + 2)
-        self.size = self._size()
-        self._serve()
+        self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(ahead + 2), True)
+        self.size = self._size() if size is None else size  # a share already knows it
 
     def _get(self, start, end):
         return self.upstream.get(start, end)
@@ -252,9 +251,21 @@ class RangeCache(Served):
             self.block(i)
 
     def close(self):
-        Served.close(self)
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        if self.own_pool:
+            self.pool.shutdown(wait=False, cancel_futures=True)
         self.upstream.close()
+
+
+class RangeCache(Blocks, Served):
+    """A remote disc image, cached in blocks and served to libVLC at a loopback URL."""
+
+    def __init__(self, url, keep=512, ahead=14):
+        super().__init__(url, keep, ahead)
+        self._serve()
+
+    def close(self):
+        Served.close(self)
+        Blocks.close(self)
 
     def _handler(self):
         return _endpoint(self)
@@ -346,25 +357,35 @@ class LocalImage(Served):
         self.fp.close()
 
 
-class Share(Served):
-    """A disc assembled from the separate files of a remote share."""
+SHARE_AHEAD = 22  # 24 connections: measured as the most a share gives before it throttles
+SHARE_KEEP = 128  # blocks per file, so ~64 MiB on whichever stream is playing
 
-    def __init__(self, streams):
-        self.streams = streams
+
+class Share(Served):
+    """A disc assembled from the separate files of a remote share.
+
+    One pool of connections is shared by every file: a Blu-ray has a few hundred of them
+    and a pool each would mean thousands of threads.
+    """
+
+    def __init__(self, files):
+        self.pool = ThreadPoolExecutor(SHARE_AHEAD + 2)
+        self.streams = {path: RemoteFile(link, size, self.pool) for path, (link, size) in files.items()}
         self._serve()
 
     def close(self):
         super().close()
         for stream in self.streams.values():
             stream.close()
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
 
 class RemoteFile(io.RawIOBase):
-    """One file on a share, read over ranged GETs."""
-    # ponytail: no read-ahead, one request per read; add it if sequential playback stalls
+    """One file on a share, read through its own block cache off the share's connection pool."""
 
-    def __init__(self, url, size):
-        self.upstream, self.size, self.pos = Upstream(url), size, 0
+    def __init__(self, url, size, pool=None):
+        self.cache = Blocks(url, keep=SHARE_KEEP, ahead=SHARE_AHEAD, size=size, pool=pool)
+        self.size, self.pos = size, 0
 
     def readable(self):
         return True
@@ -383,13 +404,14 @@ class RemoteFile(io.RawIOBase):
         size = min(self.size - self.pos if size < 0 else size, self.size - self.pos)
         if size <= 0:
             return b""
-        with self.upstream.get(self.pos, self.pos + size - 1) as r:
-            data = r.read()
+        # Reads arrive a block at a time, so the next ones have to be in flight already.
+        self.cache.prefetch(self.pos)
+        data = self.cache.read(self.pos, size)
         self.pos += len(data)
         return data
 
     def close(self):
-        self.upstream.close()
+        self.cache.close()
         super().close()
 
 
@@ -518,10 +540,9 @@ def _share(url, disc_root):
     files = webdav.walk(url, propfind)
     if not files:
         raise OSError("That share is empty")
-    streams = {path: RemoteFile(link, size) for path, (link, size) in files.items()}
-    image = Share(streams)
+    image = Share(files)
     try:
-        image.view = project_remote(streams, root=disc_root)
+        image.view = project_remote(image.streams, root=disc_root)
     except Exception:
         image.close()
         raise
