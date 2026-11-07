@@ -6,7 +6,6 @@ failures; this test catches missing files, permissions, DLL locks and symlinks.
 """
 import hashlib
 import json
-import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,7 +15,7 @@ import threading
 import time
 from unittest.mock import patch
 
-from isoplay import updates
+from isoplay import __version__, updates
 
 
 def main():
@@ -24,10 +23,12 @@ def main():
     name = updates.asset_name()
     archive = root / "dist" / name
     source = root / "dist" / ("isoplay.app" if sys.platform == "darwin" else "isoplay")
+    if not archive.is_file() or not source.exists():
+        raise SystemExit(f"needs a built bundle: run python build.py first ({archive} missing)")
     with tempfile.TemporaryDirectory(prefix="isoplay-update-smoke-") as directory:
         target = Path(directory).resolve() / source.name
         shutil.copytree(source, target, symlinks=True)
-        tag = "v" + re.search(r'__version__ = "([^"]+)"', (root / "isoplay.py").read_text()).group(1)
+        tag = "v" + __version__
         info = updates.Release(tag, "Smoke test", "", name, "https://example.invalid/test",
                                archive.stat().st_size, hashlib.sha256(archive.read_bytes()).hexdigest())
         with patch.object(updates, "urlopen", side_effect=lambda *a, **k: archive.open("rb")):
