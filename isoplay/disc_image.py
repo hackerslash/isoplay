@@ -88,15 +88,20 @@ class _MetadataImage(io.RawIOBase):
         # Files never overlap metadata pages, and pread keeps no cursor, so readers
         # do not have to queue behind each other's network fetches.
         i = max(0, bisect.bisect_right(self.starts, pos) - 1)
+        spans = []
         for start, length, fp in self.files[i:]:
             if start >= end:
                 break
             a, b = max(pos, start), min(end, start + length)
             if a < b:
-                data = fp.pread(a - start, b - a)
-                if len(data) != b - a:
-                    raise OSError("short read in disc file")
-                out[a - pos:b - pos] = data
+                spans.append((start, a, b, fp))
+                if hasattr(fp, "want"):
+                    fp.want(a - start, b - a)  # a disc's small files sit together; fetch them at once
+        for start, a, b, fp in spans:
+            data = fp.pread(a - start, b - a)
+            if len(data) != b - a:
+                raise OSError("short read in disc file")
+            out[a - pos:b - pos] = data
         for page in range(pos // 2048, (end + 2047) // 2048):
             data = self.pages.get(page)
             if data is not None:

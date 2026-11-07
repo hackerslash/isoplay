@@ -411,6 +411,11 @@ class RemoteFile(io.RawIOBase):
         self.pos = (0 if whence == 0 else self.pos if whence == 1 else self.size) + offset
         return self.pos
 
+    def want(self, pos, size):
+        """Queue the blocks under a span without waiting for them."""
+        for i in range(pos // BLOCK, (min(pos + size, self.size) + BLOCK - 1) // BLOCK):
+            self.cache.block(i)
+
     def pread(self, pos, size):
         size = min(size, self.size - pos)
         if size <= 0:
