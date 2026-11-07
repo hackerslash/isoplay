@@ -4,6 +4,7 @@ import http.client
 import io
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -121,7 +122,11 @@ class Upstream:
                 # Bounded: a server that ignores Range answers with the whole file, and some
                 # of those files are tens of gigabytes.
                 data = response.read(end - start + 1)
-            except (http.client.HTTPException, OSError) as e:
+            except Exception as e:
+                if self.closed:  # close() pulled the socket from under this read; http.client trips over it
+                    raise OSError("the stream was closed") from None
+                if not isinstance(e, (http.client.HTTPException, OSError)):
+                    raise
                 trace(f"upstream {start}-{end} attempt {attempt + 1} failed: {e!r}")
                 self._drop()
                 if attempt == 2:
@@ -153,6 +158,11 @@ class Upstream:
         with self.lock:
             connections, self.connections = self.connections, []
         for connection in connections:
+            if connection.sock:  # close() alone doesn't wake a read blocked on it; quitting waited 30 s
+                try:
+                    connection.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             connection.close()
 
 

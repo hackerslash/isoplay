@@ -2,6 +2,7 @@
 import base64
 import os
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -180,6 +181,43 @@ class ShareTests(unittest.TestCase):
             blocks.prefetch(i * mib)
             blocks.read(i * mib, mib)
         self.assertGreaterEqual(max(set(blocks.pending) | set(blocks.blocks) - {500}), 63 + blocks.ahead // 2)
+
+    def test_closing_wakes_a_read_stuck_on_a_silent_host(self):
+        class Silent(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(206)
+                self.send_header("Content-Range", "bytes 0-99/100")
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                time.sleep(10)  # headers sent, body never comes
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Silent)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = media.Upstream(f"http://127.0.0.1:{server.server_port}/f")
+        outcome = []
+
+        def read():
+            try:
+                upstream.get(0, 99)
+            except Exception as e:
+                outcome.append(e)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        time.sleep(0.5)
+        started = time.monotonic()
+        upstream.close()
+        reader.join(5)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIsInstance(outcome[0], OSError)
 
     def test_a_plain_web_server_is_not_taken_for_a_share(self):
         with self.assertRaisesRegex(OSError, "WebDAV"):
