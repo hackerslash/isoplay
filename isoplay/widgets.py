@@ -243,7 +243,7 @@ class RecentRow(QFrame):
 
 
 def disc_label(root):
-    return root.strip("/").replace("_", " ").title() or "Disc"
+    return root.rstrip("/").rpartition("/")[2].replace("_", " ").title() or "Disc"
 
 
 class DiscChooser(QWidget):

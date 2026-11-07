@@ -123,7 +123,7 @@ class WelcomeLayoutTests(unittest.TestCase):
                                        (None, "film.iso", "Disc image")):
             with self.subTest(kind=kind, source=source):
                 item = {"src": source, "name": "Film", "kind": kind, "ts": time.time()}
-                row = RecentRow(item, Mock())
+                row = RecentRow(item, Mock(), Mock())
                 badge = row.findChild(MediaBadge)
                 self.assertEqual(badge.accessibleName(), expected)
                 self.assertIn(expected, row.toolTip())

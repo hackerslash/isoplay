@@ -10,7 +10,7 @@ from isoplay import runtime  # noqa: F401 - sets the VLC environment before vlc 
 
 import vlc  # noqa: E402
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QSettings, Qt, QTimer, Signal  # noqa: E402
-from PySide6.QtGui import QAction, QCursor, QKeySequence  # noqa: E402
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
@@ -29,6 +29,8 @@ from isoplay.widgets import (  # noqa: E402
 KIND = {"bluray": "Blu-ray", "dvd": "DVD"}
 BADGE = 36  # shared height of the back control and the status bubble beside it
 STALL = 45  # seconds of a black screen before an open is called a failure
+FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
+SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
 
 
 class Bridge(QObject):
@@ -128,9 +130,19 @@ class Player(QMainWindow):
 
     def build_actions(self):
         self.act_open = self.action("Open File…", QKeySequence.Open, self.browse)
+        self.act_folder = self.action("Open Disc Folder…", "Ctrl+Shift+O", self.browse_folder)
         self.act_url = self.action("Open Link…", "Ctrl+L", self.ask_url)
         self.act_paste = self.action("Play Copied Link", QKeySequence.Paste, self.paste)
         self.act_close = self.action("Close Video", QKeySequence.Close, self.close_video)
+        self.act_subs = self.action("Add Subtitle File…", "Ctrl+Shift+S", self.add_subtitles)
+        self.fit = self.settings.value("fit", "fit")
+        if self.fit not in FIT:
+            self.fit = "fit"
+        self.fit_group = QActionGroup(self)
+        for mode, label in FIT.items():
+            item = self.action(label, None, lambda _=False, m=mode: self.set_fit(m), checkable=True)
+            item.setChecked(mode == self.fit)
+            self.fit_group.addAction(item)
         self.act_pause = self.action("Play/Pause", None, self.toggle_pause)
         self.act_discmenu = self.action("Disc Menu", None, lambda: self.mp.navigate(vlc.NavigateMode.popup))
         self.act_menus = self.action("Start Discs at Their Menu", None, self.menus_changed, checkable=True)
@@ -147,10 +159,12 @@ class Player(QMainWindow):
         self.updater.busy_changed.connect(lambda busy: self.act_updates.setEnabled(not busy))
         if MAC:
             bar = self.menuBar()
-            for title, acts in (("File", (self.act_open, self.act_url, self.act_paste, None, self.act_close)),
+            for title, acts in (("File", (self.act_open, self.act_folder, self.act_url, self.act_paste,
+                                          None, self.act_close)),
                                 ("Playback", (self.act_pause, None, self.act_prev, self.act_next, None,
                                               self.act_discmenu, self.act_main, None, self.act_menus)),
-                                ("Video", (self.act_full,)),
+                                ("Video", (self.act_full, None, *self.fit_group.actions(),
+                                           None, self.act_subs)),
                                 ("Help", (self.act_updates, self.act_auto_updates))):
                 m = bar.addMenu(title)
                 for a in acts:
@@ -361,6 +375,38 @@ class Player(QMainWindow):
             self.settings.setValue("dir", str(Path(f).parent))
             self.play(f)
 
+    def add_subtitles(self):
+        if not self.mp.get_media():
+            return
+        start = str(Path(self.current).parent) if self.current and not is_url(self.current) else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Add Subtitle File", start,
+                                              "Subtitles (" + " ".join("*" + e for e in sorted(SUB_EXT)) + ")")
+        if path:
+            self.load_subtitles(path)
+
+    def load_subtitles(self, path):
+        uri = path if is_url(path) else Path(path).as_uri()
+        ok = self.mp.add_slave(vlc.MediaSlaveType.subtitle, uri, True) == 0
+        self.flash(f"Subtitles: {display_name(path)}" if ok else "Couldn't load those subtitles", 2.0)
+
+    def set_fit(self, mode):
+        self.fit = mode
+        self.settings.setValue("fit", mode)
+        self.apply_fit()
+        self.flash(FIT[mode], 1.2)
+
+    def apply_fit(self):
+        """Fill crops the overflow, stretch distorts; both track the window's own shape."""
+        shape = f"{max(self.video.width(), 1)}:{max(self.video.height(), 1)}"
+        self.mp.video_set_aspect_ratio(shape if self.fit == "stretch" else None)
+        self.mp.video_set_crop_geometry(shape if self.fit == "fill" else None)
+
+    def browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Open Disc Folder", self.settings.value("dir", ""))
+        if folder:
+            self.settings.setValue("dir", str(Path(folder).parent))
+            self.play(folder)
+
     def ask_url(self):
         clip = QApplication.clipboard().text().strip()
         url, ok = QInputDialog.getText(self, "Open Location", "Link to a disc image or video file:",
@@ -447,6 +493,7 @@ class Player(QMainWindow):
             media.add_option(":no-bluray-menu")
         self.mp.set_media(media)
         self.mp.play()
+        self.apply_fit()
         self.deadline = time.monotonic() + STALL
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
@@ -538,6 +585,11 @@ class Player(QMainWindow):
                 a.triggered.connect(lambda _=False, t=tid, s=select, n=title, lb=label: (s(t), self.flash(f"{n}: {lb}", 1.5)))
             if not tracks:
                 menu.addAction("None").setEnabled(False)
+        menu.addAction(self.act_subs)
+        menu.addSeparator()
+        menu.addAction("Video").setEnabled(False)
+        for item in self.fit_group.actions():
+            menu.addAction(item)
         if self.disc:
             menu.addSeparator()
             menu.addAction("Disc").setEnabled(False)
@@ -640,6 +692,8 @@ class Player(QMainWindow):
 
     def resizeEvent(self, e):
         self.place()
+        if self.fit != "fit":
+            self.apply_fit()  # both modes are cut to the window, so they follow its shape
         super().resizeEvent(e)
 
     def changeEvent(self, e):
@@ -696,9 +750,13 @@ class Player(QMainWindow):
         md = e.mimeData()
         if md.hasUrls():
             u = md.urls()[0]
-            self.play(u.toLocalFile() if u.isLocalFile() else u.toString())
+            src = u.toLocalFile() if u.isLocalFile() else u.toString()
         else:
-            self.play(md.text().strip())
+            src = md.text().strip()
+        if Path(src).suffix.lower() in SUB_EXT and self.mp.get_media():
+            self.load_subtitles(src)  # a subtitle dropped onto a playing film is not a new film
+        else:
+            self.play(src)
 
     def closeEvent(self, e):
         self.timer.stop()
