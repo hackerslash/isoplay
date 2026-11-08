@@ -33,9 +33,8 @@ LUCIDA = {"LucidaSansRegular": "DejaVuSans", "LucidaSansDemiBold": "DejaVuSans-B
           "LucidaTypewriterRegular": "DejaVuSansMono", "LucidaTypewriterBold": "DejaVuSansMono-Bold",
           "LucidaTypewriterOblique": "DejaVuSansMono-Oblique",
           "LucidaTypewriterBoldOblique": "DejaVuSansMono-BoldOblique"}
-# Qt the player never loads, pulled in only because the PDF image plugin and the virtual keyboard
-# input plugin depend on them: QtPdf, QtQuick, QtQml and the keyboard, ~20 MB. Same names everywhere,
-# give or take a lib prefix, a 6 and a framework.
+# Qt the player never loads, ~20 MB pulled in by the PDF image and virtual keyboard plugins.
+# The names match on every platform, give or take a lib prefix, a 6 and a framework.
 QT_UNUSED = re.compile(r"(?i)^(lib)?qt6?(pdf|quick|qml|virtualkeyboard)|^(lib)?q(pdf|tvirtualkeyboardplugin)\.")
 
 # Libraries every Linux desktop already has, or that must match the host (GPU/audio/glibc).

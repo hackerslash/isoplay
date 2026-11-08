@@ -85,7 +85,9 @@ class DiskCache:
     def set_limit(self, limit):
         with self.lock:
             self.limit = limit
-            if self.size is not None and self.size > limit:
+            if self.size is None:
+                self.size = self.used()
+            if self.size > limit:
                 self._evict()
 
     def clear(self):

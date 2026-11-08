@@ -760,12 +760,12 @@ class Player(QMainWindow):
             self.len_btn.setText(f"-{fmt(length - t)}" if self.remaining and length > 0 else fmt(length))
 
     def watch_menu(self, now):
-        """libbluray can't run some studios' BD-J menus (Disney 3D among them): the player jumps to
-        the end of a feature-length title the moment the disc opens and freezes there, still
-        reporting it plays. A still menu never looks like that, so fall back to the main title."""
+        """A BD-J menu libbluray can't run (Disney 3D) freezes at the end of a feature-length title
+        just after opening; a still menu never looks like that, so play the main title instead."""
+        if now - self.opened_at >= 120:
+            return
         t = self.mp.get_time()
-        stuck = (self.mp.get_length() > 10 * 60_000 and self.mp.get_position() >= 0.999
-                 and now - self.opened_at < 120)
+        stuck = self.mp.get_length() > 10 * 60_000 and self.mp.get_position() >= 0.999
         if not stuck or t != self.stuck_at[0]:
             self.stuck_at = (t, now)
         elif now - self.stuck_at[1] > STUCK:

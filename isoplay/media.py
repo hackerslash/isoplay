@@ -242,10 +242,9 @@ class Blocks:
                  streams=10, memory=None):
         self.url, self.bs, self.streams = url, bs or BLOCK, streams
         self.memory = memory or Memory(keep)
-        self.tag = next(TAGS)  # this file's keys in memory; the object itself would be a cycle holding 256 MiB
-        # Read-ahead requests in flight, found as TCP finds a window: one more per round while there
-        # is more to fetch than requests to fetch it, halved when the host throttles or fails.
-        # Hosts differ wildly: one CDN refused a dozen connections, a share happily took 24.
+        self.tag = next(TAGS)  # memory keys; keying by self would be a reference cycle
+        # Requests in flight, found as TCP finds a window: one more per round while there is more to
+        # fetch, halved on a throttle or failure. One CDN refused a dozen; a share took 24.
         self.limit, self.starved = float(min(3, streams)), False
         self.ahead = AHEAD // self.bs if ahead is None else ahead  # in blocks
         self.run = max(1, RUN // self.bs)

@@ -40,6 +40,12 @@ class DiskCacheTests(unittest.TestCase):
         self.assertEqual(cache.get(K, 2), b"cccc")
         self.assertLessEqual(cache.used(), 10)
 
+    def test_shrinking_before_any_write_still_frees_the_disk(self):
+        DiskCache(self.root, limit=1 << 20).put(K, 0, b"x" * 1000)
+        fresh = DiskCache(self.root, limit=1 << 20)  # a new launch: nothing counted yet
+        fresh.set_limit(0)
+        self.assertEqual(fresh.used(), 0)
+
     def test_off_and_clear_leave_nothing(self):
         cache = DiskCache(self.root, limit=1 << 20)
         cache.put(K, 0, b"data")
