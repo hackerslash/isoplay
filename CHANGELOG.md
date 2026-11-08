@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.6
 
 - Reopening a disc skips most of its round trips: what a disc was opened with is kept in a disk
   cache, 2 GB by default and sized (or turned off and cleared) under **Options → Disk Cache**.
