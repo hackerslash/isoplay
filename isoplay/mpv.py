@@ -557,9 +557,37 @@ class MpvEngine:
             if os.environ.get("ISOPLAY_DEBUG"):
                 print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
 
+    def _src_remap(self, x, y):
+        """Counter-scale normalized coordinates when mpv maps against the wrong frame.
+
+        mpv multiplies by the resolution libdvdnav reported, which falls back to the PAL
+        default (720x576) when the VM isn't started on the first query and is never
+        retried. ISOPLAY_MPV_SRC names that resolution (e.g. 720x576); the position is
+        then expressed against it so the product lands on the true pixel. Unset means
+        mpv's base is trusted.
+        """
+        spec = os.environ.get("ISOPLAY_MPV_SRC", "")
+        match = re.fullmatch(r"(\d+)x(\d+)", spec)
+        if not match:
+            return x, y
+        try:
+            params = self.player.video_params or {}
+            vw, vh = params.get("w"), params.get("h")
+        except Exception:  # noqa: BLE001 - nothing is playing yet
+            vw = vh = None
+        if not vw or not vh:
+            return x, y
+        sw, sh = int(match[1]), int(match[2])
+        remapped = (x * vw / sw, y * vh / sh) if sw and sh else (x, y)
+        if os.environ.get("ISOPLAY_DEBUG"):
+            print(f"[mpv-engine] src {sw}x{sh} video {vw}x{vh}: "
+                  f"{x:.4f},{y:.4f} -> {remapped[0]:.4f},{remapped[1]:.4f}", flush=True)
+        return remapped
+
     def menu_mouse_async(self, x, y):
         """Queue a hover position for the worker, which forwards only the latest. Never
         blocks the calling (Qt) thread, however slow the stream underneath is."""
+        x, y = self._src_remap(x, y)
         with self._mouse_lock:
             gen = self._mouse_gen
         try:  # unbounded: put_nowait cannot fail, but never block the Qt thread either way
@@ -575,6 +603,7 @@ class MpvEngine:
         select on the hovered button is the path keyboard navigation proves every time."""
         x = max(0.0, min(1.0, float(x)))
         y = max(0.0, min(1.0, float(y)))
+        x, y = self._src_remap(x, y)
         position = f"{x:.4f}", f"{y:.4f}"
         if os.environ.get("ISOPLAY_DEBUG"):
             print(f"[mpv-engine] discnav {'click' if click else 'move'} {position[0]} {position[1]} "

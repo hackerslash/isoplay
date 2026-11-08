@@ -300,6 +300,17 @@ class MpvMouseTests(unittest.TestCase):
         MpvEngine.menu_mouse(engine, 0.5, 0.25, False)
         self.assertEqual(player.commands[-1], ("discnav", "mouse-move", "0.5000", "0.2500"))
 
+    def test_src_override_counterscales_a_wrong_mpv_base(self):
+        import os as _os
+        engine, player = _unbound(video_params={"w": 720, "h": 480})
+        _os.environ["ISOPLAY_MPV_SRC"] = "720x576"  # mpv stuck on the PAL default
+        try:
+            MpvEngine.menu_mouse(engine, 0.5, 0.39, False)
+        finally:
+            del _os.environ["ISOPLAY_MPV_SRC"]
+        # mpv multiplies by its 576-line base: 0.39 * 480/576 lands back on row 187
+        self.assertEqual(player.commands[-1], ("discnav", "mouse-move", "0.5000", "0.3250"))
+
     def test_positions_outside_the_window_land_on_an_edge(self):
         engine, player = _unbound()
         MpvEngine.menu_mouse(engine, 2.0, -1.0, True)
