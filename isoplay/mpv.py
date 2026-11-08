@@ -194,11 +194,11 @@ class MpvEngine:
         self._vout = False
         player = self.player
         player.pause = False
-        for name in ("aspect", "video-zoom"):  # reset what set_fit may have changed last time
-            try:
-                player[name] = "no" if name == "aspect" else "0"
-            except Exception:  # noqa: BLE001 - exact option names differ between mpv versions
-                pass
+        try:  # reset what set_fit may have changed last time
+            player.video_aspect_override = "no"
+            player.video_zoom = 0
+        except Exception:  # noqa: BLE001 - exact option names differ between mpv versions
+            pass
         if kind in ("dvd", "bluray"):
             player["disc-menu"] = "yes" if menus else "no"
         player.command("loadfile", mrl, "replace")
@@ -225,7 +225,8 @@ class MpvEngine:
             value = getattr(self.player, name.replace("-", "_"))
         except Exception:  # noqa: BLE001 - nothing loaded, or a menu edition has no estimate
             return 0.0
-        return value if value >= 0 else 0.0
+        # an idle player answers None, not an exception, and menu editions report -1
+        return float(value) if isinstance(value, (int, float)) and value >= 0 else 0.0
 
     def time(self):
         return int(self._seconds("time-pos") * 1000)
@@ -235,9 +236,10 @@ class MpvEngine:
 
     def position(self):
         try:
-            return self.player.percent_pos / 100.0
+            value = self.player.percent_pos
         except Exception:  # noqa: BLE001
             return -1.0
+        return value / 100.0 if isinstance(value, (int, float)) else -1.0
 
     def menu_active(self):
         try:
@@ -290,9 +292,8 @@ class MpvEngine:
             value = getattr(self.player, prop)
         except Exception:  # noqa: BLE001
             return -1
-        if isinstance(value, str):  # "no" means Off, and there is no track id to hand back
-            return -1
-        return value
+        # "no" means Off and None means nothing loaded; neither is a track id to hand back
+        return value if isinstance(value, int) else -1
 
     def select_track(self, kind, tid):
         self.player["aid" if kind == "audio" else "sid"] = "no" if tid == -1 else tid
@@ -313,14 +314,14 @@ class MpvEngine:
             pass
         player = self.player
         if mode == "stretch":
-            player.aspect = f"{max(width, 1)}:{max(height, 1)}"
-            player["video-zoom"] = "0"
+            player.video_aspect_override = f"{max(width, 1)}:{max(height, 1)}"
+            player.video_zoom = 0
         elif mode == "fill":
-            player["aspect"] = "no"
-            player["video-zoom"] = str(fit_zoom(width, height, params.get("w"), params.get("h")))
+            player.video_aspect_override = "no"  # "no" is -2, mpv's own aspect
+            player.video_zoom = fit_zoom(width, height, params.get("w"), params.get("h"))
         else:
-            player["aspect"] = "no"
-            player["video-zoom"] = "0"
+            player.video_aspect_override = "no"
+            player.video_zoom = 0
 
     # --- disc menus ------------------------------------------------------------------------------------
 

@@ -93,7 +93,8 @@ class MpvPropertiesTests(unittest.TestCase):
         self.assertAlmostEqual(engine.position(), 0.42)
 
     def test_a_player_without_things_loaded_degrades_quietly(self):
-        engine, _ = _unbound(playlist_count=0, core_idle=True)  # no percent_pos at all
+        engine, _ = _unbound(playlist_count=0, core_idle=True,
+                             time_pos=None, duration=None, percent_pos=None)  # mpv's idle answers
         self.assertFalse(engine.has_media())
         self.assertFalse(engine.playing())
         self.assertEqual(engine.position(), -1.0)
@@ -112,16 +113,16 @@ class MpvPropertiesTests(unittest.TestCase):
     def test_each_fit_mode_touches_its_own_levers(self):
         engine = _unbound(video_params={"w": 800, "h": 400})[0]
         MpvEngine.set_fit(engine, "fill", 800, 400)  # same shape as the window: no zoom left
-        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "1.0"})
+        self.assertEqual(engine.player._set, {"video_aspect_override": "no", "video_zoom": 1.0})
         MpvEngine.set_fit(engine, "fit", 800, 400)  # mpv's own letterboxed fit, zero zoom
-        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "0"})
+        self.assertEqual(engine.player._set, {"video_aspect_override": "no", "video_zoom": 0})
         MpvEngine.set_fit(engine, "stretch", 800, 400)
-        self.assertEqual(engine.player._set, {"aspect": "800:400", "video-zoom": "0"})
+        self.assertEqual(engine.player._set, {"video_aspect_override": "800:400", "video_zoom": 0})
 
     def test_fill_without_a_picture_leaves_mpv_s_own_fit(self):
         engine, _ = _unbound()  # nothing is playing, no video-params to zoom against
         MpvEngine.set_fit(engine, "fill", 800, 400)
-        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "0.0"})
+        self.assertEqual(engine.player._set, {"video_aspect_override": "no", "video_zoom": 0.0})
 
     def test_tracks_read_off_the_property_list(self):
         engine = _unbound(track_list=[{"type": "audio", "id": 1, "lang": "eng", "selected": True}],
