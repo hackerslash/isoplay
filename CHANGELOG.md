@@ -9,8 +9,9 @@
   while there is more to fetch, halved on a 429 or a failure, up to 10 for a link
 - A Blu-ray whose BD-J menu libbluray can't run, which froze at the end of a feature-length title
   the moment it opened, now plays its main title instead, and says so
-- Buffering that keeps coming back says the connection is too slow for the video, and how fast it
-  is arriving, instead of only spinning
+- Playback that keeps stalling (three pauses of 3 s or more within 3 minutes) says the connection
+  is too slow for the video, and how fast it is arriving; the brief buffering after a seek or a
+  menu doesn't count
 - Quitting no longer waits up to 30 s for a download in flight; closing wakes it straight away
 - Opening a link costs one request fewer: the probe's answer already carries the file's size
 - A share's files share one 256 MiB memory budget, instead of each holding up to 192 MiB

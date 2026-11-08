@@ -35,6 +35,9 @@ BADGE = 36  # shared height of the back control and the status bubble beside it
 INSET = 18
 TITLE_BAR = 28  # height macOS slides over a full-screen window, below the menu bar
 STALL = 45  # seconds of a black screen before an open is called a failure
+LONG_STALL = 3  # seconds of buffering that interrupt playback; seeks and menu hand-offs are shorter
+SLOW_STALLS = 3  # long stalls within SLOW_WINDOW seconds that mean the link can't keep up
+SLOW_WINDOW = 180
 STUCK = 8  # seconds a feature-length title may sit frozen at its end, just opened, before menus are given up
 FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
@@ -125,7 +128,7 @@ class Player(QMainWindow):
         self.buffering = False
         self.deadline = 0.0
         self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
-        self.stalls = []  # when buffering interrupted playback, for telling a link too slow for its video
+        self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -569,11 +572,13 @@ class Player(QMainWindow):
             idle = max(self.osd_until, self.busy_until) < time.monotonic()
             if pct < 100 and started and (self.buffering or idle):
                 if not self.buffering:
-                    now = time.monotonic()
-                    self.stalls = [t for t in self.stalls if now - t < 120] + [now]
+                    self.stall_from = time.monotonic()
                 self.flash(self.buffering_text(), sticky=True, busy=True, percent=pct)
                 self.buffering = True
             elif pct >= 100 and self.buffering:
+                now = time.monotonic()
+                if now - self.stall_from >= LONG_STALL:
+                    self.stalls = [t for t in self.stalls if now - t < SLOW_WINDOW] + [now]
                 self.flash("")
         elif name == "vout":
             self.flash(self.notice, seconds=8) if self.notice else self.flash("")
@@ -591,7 +596,9 @@ class Player(QMainWindow):
 
     def buffering_text(self):
         """Repeated stalls mean the link can't keep up; say so, with what is actually arriving."""
-        if len(self.stalls) < 3:
+        now = time.monotonic()
+        ongoing = self.buffering and now - self.stall_from >= LONG_STALL
+        if sum(now - t < SLOW_WINDOW for t in self.stalls) + ongoing < SLOW_STALLS:
             return "Buffering"
         rate = self.proxy.rate() if self.proxy is not None and hasattr(self.proxy, "rate") else 0
         arriving = f" (about {rate / 1e6:.1f} MB/s arriving)" if rate else ""

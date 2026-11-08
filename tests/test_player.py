@@ -14,7 +14,7 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0, stalls=[], proxy=None)
+                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None)
     player.mp.get_time.return_value = 5000
     player.buffering_text = lambda: Player.buffering_text(player)
     player.__dict__.update(overrides)
@@ -37,14 +37,28 @@ class BufferingTests(unittest.TestCase):
         Player.on_event(player, "buffer:60")
         player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=60)
 
-    def test_repeated_stalls_say_the_connection_is_too_slow_with_the_rate_arriving(self):
+    def stall(self, player, seconds):
+        player.buffering = False
+        Player.on_event(player, "buffer:10")
+        player.stall_from -= seconds  # as if it had buffered that long
+        Player.on_event(player, "buffer:100")
+        player.buffering = False
+
+    def test_repeated_long_stalls_say_the_connection_is_too_slow_with_the_rate_arriving(self):
         player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
-        for _ in range(3):  # three separate stalls
-            player.buffering = False
-            Player.on_event(player, "buffer:10")
+        for _ in range(3):
+            self.stall(player, 5)
+        Player.on_event(player, "buffer:10")
         text = player.flash.call_args.args[0]
         self.assertIn("too slow", text)
         self.assertIn("5.3 MB/s", text)
+
+    def test_brief_buffering_after_seeks_and_menus_never_says_too_slow(self):
+        player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
+        for _ in range(10):
+            self.stall(player, 1)
+        Player.on_event(player, "buffer:10")
+        self.assertEqual(player.flash.call_args.args[0], "Buffering")
 
     def test_one_stall_is_just_buffering(self):
         player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
