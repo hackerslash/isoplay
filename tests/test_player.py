@@ -16,7 +16,10 @@ def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
                   deadline=0.0, stalls=[], stall_from=0.0, proxy=None)
     player.mp.get_time.return_value = 5000
+    player.mp.get_title.return_value = 1
+    player.mp.get_full_title_descriptions.return_value = [Mock(flags=3), Mock(flags=0)]  # a top menu, a film
     player.buffering_text = lambda: Player.buffering_text(player)
+    player.on_menu = lambda: Player.on_menu(player)
     player.__dict__.update(overrides)
     return player
 
@@ -63,6 +66,19 @@ class BufferingTests(unittest.TestCase):
         player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
         Player.on_event(player, "buffer:10")
         player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=10)
+
+    def test_a_disc_menu_waiting_for_a_choice_is_not_buffering(self):
+        player = waiting(busy_until=0.0)
+        player.mp.get_title.return_value = 0  # the top menu
+        Player.on_event(player, "buffer:0")
+        player.flash.assert_not_called()
+        self.assertEqual(player.stalls, [])
+
+    def test_a_buffering_spinner_already_up_clears_when_the_menu_appears(self):
+        player = waiting(buffering=True)
+        player.mp.get_title.return_value = 0
+        Player.on_event(player, "buffer:0")
+        player.flash.assert_called_once_with("")
 
     def test_full_buffer_clears_only_after_buffering(self):
         player = waiting(buffering=True, busy_until=0.0)

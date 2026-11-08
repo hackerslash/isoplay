@@ -571,6 +571,10 @@ class Player(QMainWindow):
             started = self.mp.get_time() > 0
             idle = max(self.osd_until, self.busy_until) < time.monotonic()
             if pct < 100 and started and (self.buffering or idle):
+                if self.on_menu():  # waiting for a choice, not for data
+                    if self.buffering:
+                        self.flash("")
+                    return
                 if not self.buffering:
                     self.stall_from = time.monotonic()
                 self.flash(self.buffering_text(), sticky=True, busy=True, percent=pct)
@@ -593,6 +597,14 @@ class Player(QMainWindow):
                 self.flash("The disc menu didn't load. Try Play Main Title Without Menus", seconds=10)
             else:
                 self.fail("This wouldn't play")
+
+    def on_menu(self):
+        """A disc menu waits for a choice, which libVLC reports as buffering at 0%."""
+        if not self.disc:
+            return False
+        title = self.mp.get_title()
+        return any(i == title and d.flags & 1  # libvlc_title_menu
+                   for i, d in enumerate(self.mp.get_full_title_descriptions() or ()))
 
     def buffering_text(self):
         """Repeated stalls mean the link can't keep up; say so, with what is actually arriving."""
