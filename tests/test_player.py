@@ -14,7 +14,7 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0, stalls=[], stall_from=0.0, seek_from=0.0, proxy=None)
+                  deadline=0.0, stalls=[], stall_from=0.0, seek_from=0.0, menu_seen=False, proxy=None)
     player.engine.time.return_value = 5000
     player.engine.length.return_value = 900_000
     player.engine.position.return_value = 0.5
@@ -167,6 +167,21 @@ class StuckMenuTests(unittest.TestCase):
 
     def test_a_film_that_really_reached_its_end_is_left_alone(self):
         self.stuck(9_111_800, frozen_for=60, opened_ago=7200).replay_main.assert_not_called()
+
+    def test_a_menu_that_ran_once_is_loading_not_dead(self):
+        player = self.stuck(9_111_800, frozen_for=60)
+        player.menu_seen = True  # disc-menu-active was true: BD-J boot, not a still failure
+        player.replay_main.reset_mock()
+        Player.watch_menu(player, time.monotonic())
+        player.replay_main.assert_not_called()
+
+    def test_a_menu_still_pulling_data_gets_more_time(self):
+        player = self.stuck(9_111_800, frozen_for=60)
+        player.proxy = Mock(rate=Mock(return_value=200_000))  # intros/JARs still arriving
+        player.replay_main.reset_mock()
+        Player.watch_menu(player, time.monotonic())
+        player.replay_main.assert_not_called()
+        self.assertEqual(player.stuck_at[0], player.engine.time.return_value)
 
 
 class StallTests(unittest.TestCase):

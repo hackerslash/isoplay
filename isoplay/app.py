@@ -118,6 +118,7 @@ class Player(QMainWindow):
         self.buffering = False
         self.deadline = 0.0
         self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
+        self.menu_seen = False  # disc-menu-active was ever true: the menu runs, however slowly
         self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
         self.seek_from = 0.0  # when the current unreported seek started freezing the picture
 
@@ -529,6 +530,7 @@ class Player(QMainWindow):
         self.deadline = time.monotonic() + STALL
         self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
         self.seek_from = 0.0
+        self.menu_seen = False
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -746,6 +748,8 @@ class Player(QMainWindow):
         else:
             self.seek_from = 0.0
         if self.disc == "bluray" and self.use_menus:
+            if self.menu_active():
+                self.menu_seen = True
             self.watch_menu(now)
         pos = QCursor.pos()
         if pos != self.last_pos:
@@ -778,11 +782,22 @@ class Player(QMainWindow):
 
     def watch_menu(self, now):
         """A BD-J menu libbluray can't run (Disney 3D) freezes at the end of a feature-length title
-        just after opening; a still menu never looks like that, so play the main title instead."""
+        just after opening; a still menu never looks like that, so play the main title instead.
+        But a menu that ran once, or one still pulling data over the loopback, is loading,
+        not dead: intros and a cold JVM boot both look frozen for a while on a slow link."""
         if now - self.opened_at >= 120:
             return
-        t = self.engine.time()
-        stuck = self.engine.length() > 10 * 60_000 and self.engine.position() >= 0.999
+        t, length, pos = self.engine.time(), self.engine.length(), self.engine.position()
+        if os.environ.get("ISOPLAY_DEBUG"):
+            rate = self.proxy.rate() if self.arriving() else 0
+            print(f"[app menu] t={t} length={length} pos={pos:.3f} seen={self.menu_seen} "
+                  f"rate={rate:.0f}", flush=True)
+        if self.menu_seen:
+            return
+        if self.arriving():
+            self.stuck_at = (t, now)  # still pulling data: keep waiting instead of giving up
+            return
+        stuck = length > 10 * 60_000 and pos >= 0.999
         if not stuck or t != self.stuck_at[0]:
             self.stuck_at = (t, now)
         elif now - self.stuck_at[1] > STUCK:
