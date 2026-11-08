@@ -10,6 +10,11 @@
   stays libVLC. Remote discs go through a patched libmpv built by `tools/build_mpv.py`, because
   stock mpv opens disc images only from local paths; the same script builds the BD-J jar that
   matches the system libbluray. Sees `futureplan.md` item 1; nothing is bundled yet
+- The mpv engine stays responsive on slow links: its own cache and readahead are sized for
+  network play (`demuxer-readahead-secs`, a larger stream buffer, FFmpeg reconnects,
+  `force-seekable`), and a seek now reports buffering from its first frozen frame instead of
+  going quiet — seeks back to the start and small files without cache events earn the
+  spinner too, after instant seeks had their grace period
 
 ## 0.3.7
 

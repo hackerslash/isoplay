@@ -14,12 +14,13 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None)
+                  deadline=0.0, stalls=[], stall_from=0.0, seek_from=0.0, proxy=None)
     player.engine.time.return_value = 5000
     player.engine.length.return_value = 900_000
     player.engine.position.return_value = 0.5
     player.engine.playing.return_value = True
     player.engine.has_media.return_value = True
+    player.engine.seeking.return_value = False
     player.engine.menu_active.return_value = False
     player.buffering_text = lambda: Player.buffering_text(player)
     player.menu_active = lambda: Player.menu_active(player)
@@ -88,6 +89,54 @@ class BufferingTests(unittest.TestCase):
         player = waiting(buffering=True, busy_until=0.0)
         Player.on_event(player, "buffer:100")
         player.flash.assert_called_once_with("")
+
+    def test_buffering_replaces_a_seek_position_toast(self):
+        import time as _time
+        player = waiting(busy_until=0.0, osd_until=_time.monotonic() + 1.2)  # "0:05 / 1:30" still up
+        Player.on_event(player, "buffer:35")
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=35)
+
+    def test_buffering_shows_for_a_seek_back_to_zero(self):
+        player = waiting(busy_until=0.0)
+        player.engine.time.return_value = 0  # time-pos resets while the seek lands
+        Player.on_event(player, "buffer:10")
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=10)
+
+
+class SeekWatchdogTests(unittest.TestCase):
+    """A seek mpv never reports as buffering (small files have no cache events) still earns
+    the spinner from the tick, after instant seeks had their grace period."""
+
+    def seeking(self, **overrides):
+        overrides.setdefault("busy_until", 0.0)
+        player = waiting(**overrides)
+        player.engine.seeking.return_value = True
+        player.controls.isVisible.return_value = False  # skip the play/pause icon refresh
+        return player
+
+    def test_a_silent_seek_arms_quietly_then_shows_the_spinner(self):
+        player = self.seeking()
+        Player.tick(player)  # first sighting: start the clock, show nothing yet
+        player.flash.assert_not_called()
+        self.assertNotEqual(player.seek_from, 0.0)
+        player.seek_from -= 1.0  # the seek has been hanging past its grace period
+        Player.tick(player)
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=0)
+        self.assertTrue(player.buffering)
+
+    def test_a_finished_seek_resets_the_clock(self):
+        player = self.seeking()
+        Player.tick(player)
+        player.engine.seeking.return_value = False
+        Player.tick(player)
+        player.flash.assert_not_called()
+        self.assertEqual(player.seek_from, 0.0)
+
+    def test_no_watchdog_while_an_open_is_already_showing(self):
+        player = self.seeking(busy_until=float("inf"))  # "Loading" owns the screen
+        player.seek_from = time.monotonic() - 1.0
+        Player.tick(player)
+        player.flash.assert_not_called()
 
 
 class StuckMenuTests(unittest.TestCase):

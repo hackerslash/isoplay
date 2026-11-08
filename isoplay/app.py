@@ -37,6 +37,7 @@ INSET = 18
 TITLE_BAR = 28  # height macOS slides over a full-screen window, below the menu bar
 STALL = 45  # seconds of a black screen before an open is called a failure
 LONG_STALL = 3  # seconds of buffering that interrupt playback; seeks and menu hand-offs are shorter
+SEEK_GRACE = 0.4  # seconds an instant seek gets before its frozen frame earns the spinner
 SLOW_STALLS = 3  # long stalls within SLOW_WINDOW seconds that mean the link can't keep up
 SLOW_WINDOW = 180
 STUCK = 8  # seconds a feature-length title may sit frozen at its end, just opened, before menus are given up
@@ -118,6 +119,7 @@ class Player(QMainWindow):
         self.deadline = 0.0
         self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
         self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
+        self.seek_from = 0.0  # when the current unreported seek started freezing the picture
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -526,6 +528,7 @@ class Player(QMainWindow):
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
         self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
+        self.seek_from = 0.0
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -553,9 +556,13 @@ class Player(QMainWindow):
             pct = int(name[7:])
             if self.deadline:
                 self.deadline = time.monotonic() + STALL
-            started = self.engine.time() > 0
-            idle = max(self.osd_until, self.busy_until) < time.monotonic()
-            if pct < 100 and started and (self.buffering or idle):
+            # A seek back to the start reads time 0 while the picture is frozen: length known
+            # means the stream is open, which is what "started" is really asking.
+            started = self.engine.time() > 0 or self.engine.length() > 0
+            # The Loader ring means an open is already explaining the black screen; a position
+            # toast ("0:05 / 1:30", flashed by the seek itself) must not hold the spinner off.
+            loading = self.busy_until > time.monotonic()
+            if pct < 100 and started and (self.buffering or not loading):
                 if self.menu_active():  # waiting for a choice, not for data
                     if self.buffering:
                         self.flash("")
@@ -723,6 +730,18 @@ class Player(QMainWindow):
                 else:
                     self.fail("Nothing played from this")
                     return
+        if not self.buffering and not self.deadline and self.engine.seeking():
+            # A seek the engine never reported as buffering (a small file has no cache events,
+            # so mpv stays quiet while the frame is frozen): show the spinner instead of nothing,
+            # but give instant seeks a grace period so they never flicker.
+            if not self.seek_from:
+                self.seek_from = now
+            elif now - self.seek_from >= SEEK_GRACE and self.busy_until <= now:
+                self.stall_from = now
+                self.flash(self.buffering_text(), sticky=True, busy=True, percent=0)
+                self.buffering = True
+        else:
+            self.seek_from = 0.0
         if self.disc == "bluray" and self.use_menus:
             self.watch_menu(now)
         pos = QCursor.pos()

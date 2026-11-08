@@ -72,6 +72,11 @@ class Engine:
 
     def menu_active(self) -> bool:
         """A disc menu is on screen waiting for a choice."""
+
+    def seeking(self) -> bool:
+        """A seek is in flight: the picture is frozen until it lands. libVLC reports seeks
+        through buffering events instead, so only the mpv engine answers True."""
+        return False
         raise NotImplementedError
 
     # --- transport -----------------------------------------------------------------------------------

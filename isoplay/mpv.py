@@ -111,6 +111,21 @@ def fit_zoom(width, height, video_w, video_h):
     return cover / box if box else 0.0
 
 
+# mpv's own network layer, tuned for isoplay's inputs (mpv 0.42 option names). Discs arrive
+# over the loopback proxy and plain videos straight over remote https, so mpv's cache,
+# readahead and reconnects all matter. Applied best-effort after construction, one option at
+# a time, so a libmpv missing one still starts.
+NETWORK_OPTIONS = {
+    "cache": "yes",  # always keep a demuxer cache, even for inputs mpv deems local
+    "demuxer-readahead-secs": "10",  # headroom past the play head (default 1); seeks stall less
+    "stream-buffer-size": "1048576",  # fewer round trips per megabyte (default 128 KiB)
+    "network-timeout": "30",  # idle seconds before a dead socket errors (the open deadline is 45)
+    "stream-lavf-o": "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
+                      "reconnect_delay_max=5",  # flaky hosts: FFmpeg redials instead of failing
+    "force-seekable": "yes",  # hosts that omit Accept-Ranges still honor Range on GET
+}
+
+
 # --- the engine -----------------------------------------------------------------------------------------
 
 
@@ -146,6 +161,11 @@ class MpvEngine:
         self.render_context = None
         self.emit = None
         self._vout = False  # once per open, a video track actually being drawn
+        self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
+        self._stalled = False     # paused-for-cache: mpv wants data and none is arriving
+        self._seeking = False     # a seek is in flight: the picture is frozen by definition
+        self._apply_network_options()
+        self._observe()
         version = getattr(self.player, "mpv_version", "") or ""
         match = re.search(r"v(\d+)\.(\d+)\.(\d+)", version)
         if match and tuple(map(int, match.groups())) < (0, 42, 0):
@@ -160,25 +180,40 @@ class MpvEngine:
             if name:
                 self._emit(name)
 
-        self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
-        self._stalled = False     # paused-for-cache: mpv wants data and none is arriving
+    def _apply_network_options(self):
+        for name, value in NETWORK_OPTIONS.items():
+            try:
+                self.player[name] = value
+            except Exception as e:  # noqa: BLE001 - an older or newer libmpv without this option
+                if os.environ.get("ISOPLAY_DEBUG"):
+                    print(f"[mpv-engine] option {name} not applied: {e!r}", flush=True)
+
+    def _report(self):
+        """One buffering state from three flags: seeking or stalled means waiting for data,
+        whatever the cache percentage still reads (libbluray keeps it at 100 while blocked on
+        our read callback, and a seek has no fill to report at all)."""
+        if self._seeking or self._stalled:
+            self._emit("buffer:0")
+        elif self._cache_state is None:
+            self._emit("buffer:100")  # no demuxer cache (a local file): nothing to report
+        else:
+            self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
+
+    def _observe(self):
+        player = self.player
 
         def _stalled(name, value):
             self._stalled = bool(value)
-            if self._stalled:
-                self._emit("buffer:0")  # waiting for data
-            elif self._cache_state is None:
-                self._emit("buffer:100")  # no demuxer cache (a local file): nothing to report
-            else:
-                self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
+            self._report()
 
         def _cache(name, value):
-            # libbluray reads through our callback, so during a stall the demuxer cache can
-            # still read 100 while playback waits; letting that through would clear the
-            # buffering overlay instantly. The stall flag wins until data flows again.
             self._cache_state = value if isinstance(value, (int, float)) else None
-            if self._cache_state is not None and not self._stalled:
-                self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
+            if self._cache_state is not None and not self._stalled and not self._seeking:
+                self._report()
+
+        def _seeking(name, value):
+            self._seeking = bool(value)
+            self._report()
 
         def _video(name, value):
             if value and not self._vout:
@@ -187,6 +222,7 @@ class MpvEngine:
 
         player.observe_property("paused-for-cache", _stalled)
         player.observe_property("cache-buffering-state", _cache)
+        player.observe_property("seeking", _seeking)
         player.observe_property("video-format", _video)
 
     def _emit(self, name):
@@ -219,6 +255,8 @@ class MpvEngine:
         if os.environ.get("ISOPLAY_DEBUG"):
             print(f"[mpv-engine] open {mrl} kind={kind or 'plain'} menus={menus}", flush=True)
         self._vout = False
+        self._stalled = self._seeking = False
+        self._cache_state = None
         player = self.player
         player.pause = False
         try:  # reset what set_fit may have changed last time
@@ -282,6 +320,12 @@ class MpvEngine:
     def menu_active(self):
         try:
             return bool(self.player.disc_menu_active)
+        except Exception:  # noqa: BLE001 - unset while nothing plays
+            return False
+
+    def seeking(self):
+        try:
+            return bool(self.player.seeking)
         except Exception:  # noqa: BLE001 - unset while nothing plays
             return False
 

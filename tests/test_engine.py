@@ -63,6 +63,7 @@ class _Player:
         object.__setattr__(self, "_props", props)
         object.__setattr__(self, "_set", {})
         object.__setattr__(self, "commands", [])
+        object.__setattr__(self, "observed", {})
 
     def __getattr__(self, name):
         try:
@@ -75,6 +76,9 @@ class _Player:
 
     def __setitem__(self, name, value):
         self._set[name] = value
+
+    def observe_property(self, name, callback):
+        self.observed[name] = callback
 
     def command(self, *args):
         self.commands.append(args)
@@ -161,6 +165,92 @@ class MpvOpenTests(unittest.TestCase):
         MpvEngine.open(engine, "/films/a.mkv")
         self.assertEqual(player.commands[-1], ("loadfile", "/films/a.mkv", "replace"))
         self.assertNotIn("dvd-device", player._set)
+
+
+class MpvNetworkTests(unittest.TestCase):
+    """mpv's own network layer is tuned for isoplay's inputs: the loopback proxy behind discs
+    and remote https straight behind plain videos."""
+
+    def test_network_options_reach_the_player(self):
+        engine, _ = _unbound()
+        MpvEngine._apply_network_options(engine)
+        self.assertEqual(engine.player._set["cache"], "yes")
+        self.assertEqual(engine.player._set["demuxer-readahead-secs"], "10")
+        self.assertEqual(engine.player._set["stream-buffer-size"], "1048576")
+        self.assertEqual(engine.player._set["network-timeout"], "30")
+        self.assertIn("reconnect", engine.player._set["stream-lavf-o"])
+        self.assertEqual(engine.player._set["force-seekable"], "yes")
+
+    def test_a_missing_option_does_not_sink_the_engine(self):
+        engine, player = _unbound()
+        real_setitem = _Player.__setitem__
+
+        def fail_once(self, name, value):
+            if name == "stream-lavf-o":
+                raise RuntimeError("no such option")
+            real_setitem(self, name, value)
+
+        original = _Player.__setitem__
+        _Player.__setitem__ = fail_once
+        try:
+            MpvEngine._apply_network_options(engine)  # must not raise
+        finally:
+            _Player.__setitem__ = original
+        self.assertEqual(player._set["cache"], "yes")
+
+
+class MpvBufferTests(unittest.TestCase):
+    """Seeks and stalls collapse into one buffering state: seeking or stalled means waiting,
+    whatever the cache percentage still reads."""
+
+    def engine(self):
+        engine, player = _unbound()
+        events = []
+        engine.emit = events.append
+        engine._cache_state, engine._stalled, engine._seeking = None, False, False
+        MpvEngine._observe(engine)
+        self.assertEqual(set(player.observed),
+                         {"paused-for-cache", "cache-buffering-state", "seeking", "video-format"})
+        return engine, player, events
+
+    def fire(self, player, name, value):
+        player.observed[name](name, value)
+
+    def test_a_seek_reports_waiting_then_filling(self):
+        _, player, events = self.engine()
+        self.fire(player, "seeking", True)  # small files have no cache events of their own
+        self.assertEqual(events, ["buffer:0"])
+        self.fire(player, "seeking", False)
+        self.assertEqual(events, ["buffer:0", "buffer:100"])
+
+    def test_a_full_cache_does_not_clear_a_seek(self):
+        _, player, events = self.engine()
+        self.fire(player, "seeking", True)
+        self.fire(player, "cache-buffering-state", 100)
+        self.assertEqual(events, ["buffer:0"])  # the seek still holds the spinner
+        self.fire(player, "seeking", False)
+        self.assertEqual(events[-1], "buffer:100")  # landing re-sends the fill it held back
+
+    def test_a_stall_inside_a_seek_stays_waiting(self):
+        _, player, events = self.engine()
+        self.fire(player, "seeking", True)
+        self.fire(player, "paused-for-cache", True)
+        self.fire(player, "cache-buffering-state", 100)  # libbluray blocks on our callback at 100
+        self.fire(player, "paused-for-cache", False)
+        self.assertNotIn("buffer:100", events)  # nothing cleared the spinner mid-seek
+        self.fire(player, "seeking", False)
+        self.assertEqual(events[-1], "buffer:100")
+
+    def test_open_resets_seek_and_stall_state(self):
+        engine, player = _unbound()
+        engine._stalled, engine._seeking, engine._cache_state, engine._vout = True, True, 50, True
+        MpvEngine.open(engine, "/films/a.mkv")
+        self.assertEqual((engine._stalled, engine._seeking, engine._cache_state), (False, False, None))
+
+    def test_seeking_reads_the_property(self):
+        self.assertTrue(MpvEngine.seeking(_unbound(seeking=True)[0]))
+        self.assertFalse(MpvEngine.seeking(_unbound(seeking=False)[0]))
+        self.assertFalse(MpvEngine.seeking(_unbound()[0]))  # unset while nothing plays
 
 
 class VlcMenuTests(unittest.TestCase):
