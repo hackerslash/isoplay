@@ -31,7 +31,7 @@ libdvdnav. If VLC plays your disc well, keep using it. isoplay differs in four w
 - **It opens what VLC can't.** A `BDMV` or `VIDEO_TS` folder on a WebDAV share; a disc, or an
   `.iso`, inside an uncompressed `.zip`; ISO9660-only Blu-ray images, which libbluray can't read
   and isoplay re-presents as UDF; HD DVD, Video CD and DVD-Audio, whose main title it plays since
-  no open-source player runs their menus. Images holding several discs open a chooser.
+  libVLC can't run their menus. Images holding several discs open a chooser.
 - **It reads in parallel.** VLC uses one connection, one request at a time. isoplay fetches
   several ranges at once and reads ahead, finding how many connections a host tolerates and
   backing off when it pushes back. It can't add bandwidth the host or your line doesn't have.
@@ -57,7 +57,8 @@ retail UHD discs won't play as they are. Plain video links go straight to libVLC
 | Linux x64 | `isoplay-linux-x86_64.tar.gz` | Ubuntu 24.04+ or equivalent, X11 or XWayland |
 
 libVLC and a trimmed Java runtime are bundled, so there is nothing else to install. The app
-updates itself, keeping the old version until the new one starts; turn that off in **Options**.
+offers new releases and installs them, keeping the old version until the new one starts; turn
+the check off in **Options**.
 
 ## Use
 
