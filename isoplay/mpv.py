@@ -126,7 +126,7 @@ class MpvEngine:
         else:
             # vo=libmpv hands drawing to MpvRenderContext. mpv's own window, OSC and key bindings
             # are off: the app is the window, and it forwards only what a disc menu needs.
-            self.player = self.mpv.MPV(
+            options = dict(
                 config="no",
                 vo="libmpv",
                 idle="yes",  # stay alive between sources instead of quitting with nothing loaded
@@ -137,6 +137,11 @@ class MpvEngine:
                 user_agent=UA,
                 hwdec="auto-safe",
             )
+            if os.environ.get("ISOPLAY_DEBUG"):
+                options["loglevel"] = "info"  # libmpv's own story of the disc, line by line
+                options["log_handler"] = lambda level, prefix, text: print(
+                    f"[mpv {level} {prefix}] {text.strip()}", flush=True)
+            self.player = self.mpv.MPV(**options)
         self.video_widget = None
         self.render_context = None
         self.emit = None
@@ -191,6 +196,8 @@ class MpvEngine:
     # --- media ---------------------------------------------------------------------------------------
 
     def open(self, mrl, kind=None, menus=True):
+        if os.environ.get("ISOPLAY_DEBUG"):
+            print(f"[mpv-engine] open {mrl} kind={kind or 'plain'} menus={menus}", flush=True)
         self._vout = False
         player = self.player
         player.pause = False
@@ -201,7 +208,18 @@ class MpvEngine:
             pass
         if kind in ("dvd", "bluray"):
             player["disc-menu"] = "yes" if menus else "no"
-        player.command("loadfile", mrl, "replace")
+            # Both a local path and isoplay's loopback URL go through the disc backend's
+            # device option, so a streamed image is read by bd_open_stream/dvdnav_open_stream
+            # (patched libmpv) exactly like VLC does it. Stock mpv only accepts local paths.
+            if kind == "bluray":
+                player["bluray-device"] = mrl
+                target = "bd://"
+            else:
+                player["dvd-device"] = mrl
+                target = "dvd://"
+        else:
+            target = mrl
+        player.command("loadfile", target, "replace")
 
     def close(self):
         self.player.command("stop")

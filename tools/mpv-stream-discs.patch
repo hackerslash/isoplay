@@ -1,0 +1,183 @@
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index e445499..5b7d0e5 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -137,6 +137,11 @@ struct bluray_priv_s {
+     int cfg_playlist;
+     char *cfg_device;
+ 
++    // A remote disc image (isoplay's loopback HTTP URL): libbluray reads it through
++    // bd_open_stream() over this one stream, so the reads are serialized by read_lock.
++    struct stream *under;
++    mp_mutex read_lock;
++
+     struct mp_bluray_opts *opts;
+     struct m_config_cache *opts_cache;
+ 
+@@ -623,12 +628,16 @@ static void bluray_stream_close(stream_t *s)
+         }
+         bd_close(priv->bd);
+     }
++    if (priv->under)
++        free_stream(priv->under);
++    priv->under = NULL;
+     mp_mutex_lock(&bluray_log_lock);
+     // If we created the global log, unset it.
+     if (bluray_log == priv->bluray_log)
+         bluray_log = NULL;
+     mp_mutex_unlock(&bluray_log_lock);
+     mp_mutex_destroy(&priv->overlay_lock);
++    mp_mutex_destroy(&priv->read_lock);
+ }
+ 
+ static const char *bd_event_str(uint32_t event)
+@@ -1448,6 +1457,26 @@ static bool select_initial_title(stream_t *s, int title_guess) {
+     return true;
+ }
+ 
++// libbluray's stream reader: absolute LBA and block count, 2048-byte LBAs, 1 on success.
++static int bluray_read_blocks(void *handle, void *buf, int lba, int num_blocks)
++{
++    struct bluray_priv_s *b = handle;
++    int64_t pos = (int64_t)lba * 2048;
++    size_t len = (size_t)num_blocks * 2048, got = 0;
++    bool ok;
++
++    mp_mutex_lock(&b->read_lock);
++    ok = stream_seek(b->under, pos);
++    while (ok && got < len) {
++        int n = stream_read(b->under, (char *)buf + got, len - got);
++        if (n <= 0)
++            break;
++        got += n;
++    }
++    mp_mutex_unlock(&b->read_lock);
++    return ok && got == len;
++}
++
+ static int bluray_stream_open_internal(stream_t *s)
+ {
+     struct bluray_priv_s *b = s->priv;
+@@ -1459,6 +1488,7 @@ static int bluray_stream_open_internal(stream_t *s)
+     b->opts = opts_cache->opts;
+ 
+     mp_mutex_init(&b->overlay_lock);
++    mp_mutex_init(&b->read_lock);
+ 
+     int ret = 0;
+     char *device = NULL;
+@@ -1528,7 +1558,21 @@ static int bluray_stream_open_internal(stream_t *s)
+     char *keyfile = NULL;
+     if (b->opts->keyfile && b->opts->keyfile[0])
+         keyfile = mp_get_user_path(NULL, s->global, b->opts->keyfile);
+-    int opened = bd_open_disc(bd, device_tmp, keyfile);
++    int opened;
++    if (strstr(device, "://")) {
++        // A network disc image can only be read through libbluray's block callback
++        // (bd_open_disc takes a local path). This is how VLC plays remote ISOs.
++        b->under = stream_create(device, STREAM_READ | STREAM_ORIGIN_DIRECT, s->cancel, s->global);
++        if (!b->under) {
++            MP_ERR(s, "Couldn't open the Blu-ray image stream: %s\n", device);
++            opened = 0;
++        } else {
++            MP_INFO(s, "Opening Blu-ray image from a stream: %s\n", device);
++            opened = bd_open_stream(bd, b, bluray_read_blocks);
++        }
++    } else {
++        opened = bd_open_disc(bd, device_tmp, keyfile);
++    }
+     talloc_free(keyfile);
+     talloc_free(device_tmp);
+     if (!opened) {
+diff --git a/stream/stream_dvdnav.c b/stream/stream_dvdnav.c
+index 19f724f..bd08602 100644
+--- a/stream/stream_dvdnav.c
++++ b/stream/stream_dvdnav.c
+@@ -69,6 +69,8 @@ struct priv {
+     struct mp_log *lib_log;             // used by libdvdnav's log callback
+     bool probing;                       // open is an .iso auto-detection probe
+     char *filename;                     // path
++    struct stream *under;               // stream backing a network disc image
++    dvd_reader_stream_cb cb;            // libdvdread's block reader into `under`
+     int64_t duration;                   // in 90 kHz PTS ticks
+     int title;
+     bool had_initial_vts;
+@@ -1437,6 +1439,9 @@ static void stream_dvdnav_close(stream_t *s)
+     if (priv->dvdnav)
+         dvdnav_close(priv->dvdnav);
+     priv->dvdnav = NULL;
++    if (priv->under)
++        free_stream(priv->under);
++    priv->under = NULL;
+     if (priv->dvd_speed)
+         dvd_set_speed(s, priv->filename, -1);
+     mp_mutex_destroy(&priv->lock);
+@@ -1462,6 +1467,18 @@ static void dvdnav_log(void *p, dvdnav_logger_level_t level,
+     mp_msg(priv->lib_log, lvl, "\n");
+ }
+ 
++static int dvdnav_stream_seek(void *p, uint64_t pos)
++{
++    struct priv *priv = p;
++    return stream_seek(priv->under, pos) ? 0 : -1;  // libdvdread wants 0 on success
++}
++
++static int dvdnav_stream_read(void *p, void *buf, int len)
++{
++    struct priv *priv = p;
++    return stream_read(priv->under, buf, len);  // bytes read, -1 on error, 0 at EOF
++}
++
+ static dvdnav_status_t nav_open(stream_t *stream, dvdnav_t **dest, const char *path)
+ {
+     struct priv *priv = stream->priv;
+@@ -1470,6 +1487,18 @@ static dvdnav_status_t nav_open(stream_t *stream, dvdnav_t **dest, const char *p
+     return dvdnav_open2(dest, priv, &logger_cb, path);
+ }
+ 
++static dvdnav_status_t nav_open_stream(stream_t *stream, dvdnav_t **dest)
++{
++    struct priv *priv = stream->priv;
++    priv->lib_log = mp_log_new(stream, stream->log, "/libdvdnav");
++    const dvdnav_logger_cb logger_cb = { .pf_log = dvdnav_log };
++    priv->cb = (dvd_reader_stream_cb){
++        .pf_seek = dvdnav_stream_seek,
++        .pf_read = dvdnav_stream_read,
++    };
++    return dvdnav_open_stream2(dest, priv, &logger_cb, &priv->cb);
++}
++
+ // Set the VM's language registers from our options.
+ static void set_dvd_languages(stream_t *stream)
+ {
+@@ -1515,14 +1544,24 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
+     if (!filename)
+         return NULL;
+ 
+-    if (!(priv->filename = mp_get_user_path(priv, stream->global, filename)))
+-        return NULL;
++    if (strstr(filename, "://")) {
++        // A network disc image cannot be dvdnav_open()'d; give libdvdread a block reader,
++        // the same way VLC plays remote DVDs.
++        priv->under = stream_create(filename, STREAM_READ | STREAM_ORIGIN_DIRECT, stream->cancel, stream->global);
++        if (!priv->under)
++            return NULL;
++        if (nav_open_stream(stream, &priv->dvdnav) != DVDNAV_STATUS_OK)
++            return NULL;
++    } else {
++        if (!(priv->filename = mp_get_user_path(priv, stream->global, filename)))
++            return NULL;
+ 
+-    priv->dvd_speed = priv->opts->speed;
+-    dvd_set_speed(stream, priv->filename, priv->dvd_speed);
++        priv->dvd_speed = priv->opts->speed;
++        dvd_set_speed(stream, priv->filename, priv->dvd_speed);
+ 
+-    if (nav_open(stream, &priv->dvdnav, priv->filename) != DVDNAV_STATUS_OK)
+-        return NULL;
++        if (nav_open(stream, &priv->dvdnav, priv->filename) != DVDNAV_STATUS_OK)
++            return NULL;
++    }
+ 
+     if (!priv->dvdnav)
+         return NULL;

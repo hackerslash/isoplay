@@ -64,9 +64,9 @@ def headless(seconds, sources):
     engine.player.set_loglevel("warn")  # mistakes (an old libmpv, a wrong command) print, not hide
     engine.player._log_handler = log
     engine.player["vo"] = "null"
-    for mrl, _kind in sources:
+    for mrl, kind in sources:
         print("[open]", mrl)
-        engine.open(mrl, kind="bluray", menus=True)
+        engine.open(mrl, kind=kind, menus=True)
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             observe(engine, f"{deadline - time.monotonic():4.0f}s left")

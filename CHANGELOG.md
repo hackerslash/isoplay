@@ -7,8 +7,9 @@
   (`discnav mouse-move`/`mouse-click`), which libVLC 3 has no public way to receive. Video is
   drawn by MpvRenderContext into a Qt OpenGL widget instead of native windows, so overlays are
   ordinary widgets and menus take clicks. Run it with `python dev.py --mpv`; the default engine
-  stays libVLC. Needs mpv 0.42.0 or newer (older versions have disc menus back), sees
-  `futureplan.md` item 1, and isn't bundled yet: libmpv comes from the system
+  stays libVLC. Remote discs go through a patched libmpv built by `tools/build_mpv.py`, because
+  stock mpv opens disc images only from local paths; the same script builds the BD-J jar that
+  matches the system libbluray. Sees `futureplan.md` item 1; nothing is bundled yet
 
 ## 0.3.7
 

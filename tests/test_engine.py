@@ -62,6 +62,7 @@ class _Player:
     def __init__(self, **props):
         object.__setattr__(self, "_props", props)
         object.__setattr__(self, "_set", {})
+        object.__setattr__(self, "commands", [])
 
     def __getattr__(self, name):
         try:
@@ -74,6 +75,9 @@ class _Player:
 
     def __setitem__(self, name, value):
         self._set[name] = value
+
+    def command(self, *args):
+        self.commands.append(args)
 
 
 def _unbound(**props):
@@ -132,6 +136,31 @@ class MpvPropertiesTests(unittest.TestCase):
         self.assertEqual(tracks["sub"][0], [(-1, "Off")])
         MpvEngine.select_track(engine, "sub", -1)
         self.assertEqual(engine.player._set, {"sid": "no"})
+
+
+class MpvOpenTests(unittest.TestCase):
+    """Discs go through bd:// or dvd:// with the source as the device, so libbluray and
+    libdvdnav read it with their block callbacks -- local paths and loopback URLs alike."""
+
+    def test_a_bluray_opens_in_menu_mode_through_the_disc_backend(self):
+        engine, player = _unbound()
+        MpvEngine.open(engine, "http://127.0.0.1:5/disc.iso", kind="bluray", menus=True)
+        self.assertEqual(player._set["bluray-device"], "http://127.0.0.1:5/disc.iso")
+        self.assertEqual(player._set["disc-menu"], "yes")
+        self.assertEqual(player.commands[-1], ("loadfile", "bd://", "replace"))
+
+    def test_a_dvd_without_menus_still_goes_through_dvdnav(self):
+        engine, player = _unbound()
+        MpvEngine.open(engine, "/discs/film.iso", kind="dvd", menus=False)
+        self.assertEqual(player._set["dvd-device"], "/discs/film.iso")
+        self.assertEqual(player._set["disc-menu"], "no")
+        self.assertEqual(player.commands[-1], ("loadfile", "dvd://", "replace"))
+
+    def test_a_plain_video_is_loaded_as_itself(self):
+        engine, player = _unbound()
+        MpvEngine.open(engine, "/films/a.mkv")
+        self.assertEqual(player.commands[-1], ("loadfile", "/films/a.mkv", "replace"))
+        self.assertNotIn("dvd-device", player._set)
 
 
 class VlcMenuTests(unittest.TestCase):

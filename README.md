@@ -96,9 +96,11 @@ python3 dev.py --tests          # run the test suite
 
 An experimental mpv engine is behind an extra flag: `python3 dev.py --mpv` runs the
 app with [libmpv](https://mpv.io) instead of libVLC, which from mpv 0.42 plays disc images
-directly and lets disc menus take the mouse, the thing libVLC 3 cannot do. It needs mpv 0.42.0
-or newer installed (`brew install mpv`); libVLC stays the default, and libmpv isn't bundled yet.
-`spike_mpv.py` and `docs/spike-mpv.md` cover what still needs proving with real discs.
+directly and lets disc menus take the mouse, the thing libVLC 3 cannot do. Remote discs need
+the small libmpv patch that `python3 tools/build_mpv.py` builds into `build/` (stock mpv only
+opens local disc images); the same script builds the BD-J jar matching the system's libbluray.
+libVLC stays the default, and neither library is bundled yet. `spike_mpv.py` and
+`docs/spike-mpv.md` cover what still needs proving with real discs.
 
 `media.py` streams and probes links, `webdav.py` lists shares, `diskcache.py` keeps blocks
 between plays, `disc_image.py` presents ISO9660, zip and remote discs as UDF, and `app.py`,

@@ -22,8 +22,13 @@ verified against `DOCS/man/input.rst` at v0.42.0:
   [<button>] [<single|double>]`, button omitted = position only) and a menu being up,
   "the arrow keys, ENTER, ESC/BACKSPACE and the mouse control the menu".
 - **Direct iso playback.** `.iso` images of DVD-Video, DVD-Audio and Blu-ray are "opened with
-  the matching disc backend instead of falling back to FFmpeg" — by URL shape and content, so
-  isoplay's loopback `http://127.0.0.1:PORT/disc.iso` qualifies the same way a local file does.
+  the matching disc backend instead of falling back to FFmpeg" — but only when the image is a
+  **local path**: `bluray_stream_open_internal()` needs `mp_file_get_path()` plus a regular
+  file for `bd_open_disc()`, and the same holds for `stream_dvdnav`. isoplay's loopback
+  `http://127.0.0.1:PORT/disc.iso` therefore fell through to FFmpeg ("Failed to recognize file
+  format") on the first real remote disc test. VLC plays the same images because it calls
+  libbluray's `bd_open_stream()` and libdvdnav's `dvdnav_open_stream()` with its own block
+  reader; `tools/mpv-stream-discs.patch` adds that to mpv (see "The stream patch" below).
 - **Network layer.** libcurl-based stream backend: HTTP/2, HTTP/3, connection reuse; options
   `--curl-*`. A debrid bridge's per-request handshake cost partly moves into one connection.
 - **libmpv render API.** D3D11 render API backend for Windows landed; OpenGL is everywhere
@@ -51,12 +56,41 @@ python-mpv quirks to respect (`site-packages/mpv.py` 1.0.8):
   between sources here;
 - the render context is created on an initialized player and needs `vo=libmpv`.
 
+## The stream patch (`tools/mpv-stream-discs.patch`)
+
+mpv's disc backends open a device path: `bd_open_disc()` for Blu-ray, `dvdnav_open()` for DVD.
+libbluray and libdvdnav also expose block-callback entry points (`bd_open_stream`,
+`dvdnav_open_stream`) which VLC uses for network inputs; the patch adds both to mpv:
+
+- `stream_bluray.c` and `stream_dvdnav.c` create a nested `stream_create()` for a device URL,
+  keep it in the stream's private state, and let libbluray/libdvdnav read 2048-byte blocks
+  through it. `STREAM_ORIGIN_DIRECT` is required: a nested open with no origin resolves as
+  `STREAM_UNSAFE`, which surfaces as "No protocol handler found";
+- Blu-ray reads are serialized by a mutex (libbluray can read from more than one thread) and
+  freed with the stream;
+- `tools/build_mpv.py` clones v0.42.0, applies the patch, and installs to `build/mpv`;
+  `dev.py --mpv` prefers that build automatically through `LIBMPV_PATH`.
+
+## BD-J jars
+
+BD-J needs a Java VM and a `libbluray-j2se-<native version>.jar`; Homebrew installs no jar where
+libbluray looks. `tools/build_mpv.py` also builds the matching main and awt jars into
+`build/libbluray/` when ant and javac are present, and `dev.py --mpv` points `LIBBLURAY_CP` at
+that directory. A 1.4.1 jar under a 1.5.0 native library makes libbluray disable BD-J: mpv then
+says so and plays the main title instead.
+
+What the real-disc runs proved (2026-11-08): a remote DVD and a BD-J Blu-ray both played through
+isoplay's loopback with the patched build. The Blu-ray booted in menu mode (`cfg_title=-1`,
+`hdmv_mode=1`) and `disc-menu-active` became true after the JVM boot and first-play logos
+(~55 s cold; the disk cache shortens later opens). The main feature playlist was 2:33:29.
+
 ## Where libmpv comes from on each platform
 
-- **macOS**: Homebrew (`brew install mpv`) ships `libmpv.2.dylib` in its lib dir, but
-  `ctypes.util.find_library` doesn't look there — `isoplay/mpv.py`'s `binding()` probes the
-  usual places and, as a last resort, takes `LIBMPV_PATH`. **mpv 0.42.0 or newer is required**;
-  older libmpv fails at engine creation with a message naming why.
+- **macOS**: `tools/build_mpv.py` builds the patched libmpv into `build/mpv` (meson, ninja,
+  libdvdnav and ant needed). Without it, `binding()` falls back to Homebrew's
+  `libmpv.2.dylib`, which plays local discs only and never sees isoplay's loopback URL.
+  **mpv 0.42.0 or newer is required**; older libmpv fails at engine creation with a message
+  naming why.
 - **Windows**: community `libmpv` builds (mpv-player-windows/libmpv) drop `libmpv-2.dll` next
   to the app; python-mpv searches `%PATH%` and its own module dir.
 - **Linux**: distro `libmpv2`/`mpv-libs`.
@@ -68,6 +102,7 @@ after the menus pass.
 ## How to run it
 
 ```sh
+python tools/build_mpv.py                    # once: patched libmpv + matching BD-J jar
 python dev.py --mpv Eega.iso                 # the app itself, on the mpv engine
 python spike_mpv.py Eega.iso                 # only the menu questions, in a window
 python spike_mpv.py --headless 20 Eega.iso   # the same, without a window, printed
