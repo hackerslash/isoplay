@@ -12,7 +12,7 @@ import vlc  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal,
 )
-from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence  # noqa: E402
+from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence, QSurfaceFormat  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
     QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
@@ -879,6 +879,13 @@ def main():
         if result_file:
             updates.finish_update(result_file)
         return
+    if os.environ.get("ISOPLAY_ENGINE") == "mpv":
+        # mpv's render API needs a GL 3.2+ core context for its shaders and rectangle textures;
+        # macOS otherwise gives QOpenGLWidget its legacy 2.1 profile. Must precede QApplication.
+        fmt = QSurfaceFormat()
+        fmt.setVersion(3, 2)
+        fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+        QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
     app.setApplicationName("isoplay")
     app.setApplicationDisplayName(NAME)
