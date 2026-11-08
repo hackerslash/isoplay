@@ -42,7 +42,7 @@ verified against `DOCS/man/input.rst` at v0.42.0:
 | do synthetic mouse commands reach disc menus? | discnav `mouse-*` are engine-level commands, and the manual says the mouse controls a menu | confirm a click selects a button on an HDMV disc (Eega) |
 | BD-J and the JVM | mpv 0.42 "adds BD-J menu support"; the JVM question is libbluray's, as with VLC | test Shutter Island and Blade Runner: does it need `JAVA_HOME`/a dlopen-able `libjvm`, do fonts draw, or does a menu famously without one hang |
 | does python-mpv expose the render API? | **yes**: python-mpv 1.0.8 wraps `mpv_render_context_create/render/set_update_callback` (`MpvRenderContext`, `MpvOpenGLFBO`, `MpvGlGetProcAddressFn`; ctypes structs included) | none left for discovery; the spike's window exercises the actual path |
-| menüs on macOS specifically | no platform difference documented; render API draws into the app's own surface | confirm the click lands on a menu button while the window is Qt's |
+| menüs on macOS specifically | no platform difference documented; render API draws into the app's own surface | confirm the click lands on a menu button while the window is Qt's: settled, clicks go through `discnav mouse-click <x> <y>` with normalized 0..1 coords (the `mouse` command's `mouse-pos` is in OSD units, so FBO pixels misland), and hover needs `setMouseTracking(True)` |
 
 mpv's manual also documents `--tls-verify` as **default yes** since 0.42 — isoplay's loopback
 traffic is plain `http`, so that does not touch us; upstream https will now verify, which is

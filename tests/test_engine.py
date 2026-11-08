@@ -10,6 +10,12 @@ from unittest.mock import Mock, call
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
 import vlc  # noqa: E402
 
 from isoplay.engine import VlcEngine  # noqa: E402
@@ -44,9 +50,20 @@ class MpvTrackTests(unittest.TestCase):
         self.assertEqual(rows, [(-1, "Off")])
 
     def test_labels_use_what_the_disc_gives(self):
-        self.assertEqual(track_label({"title": "Commentary", "lang": "eng"}), "Commentary eng")
-        self.assertEqual(track_label({"lang": "jpn", "codec": "opus"}), "jpn opus")
+        self.assertEqual(track_label({"title": "Commentary", "lang": "eng"}), "Commentary · English")
+        self.assertEqual(track_label({"lang": "jpn", "codec": "opus"}), "Japanese (Opus)")
+        self.assertEqual(track_label({"codec": "ac3"}), "AC-3")  # a track with no language
+        self.assertEqual(track_label({"lang": "eng", "codec": "hdmv_pgs_subtitle"}), "English (PGS)")
         self.assertEqual(track_label({"id": 7}), "")  # the caller falls back to Track 7
+
+    def test_unknown_codes_pass_through_instead_of_vanishing(self):
+        self.assertEqual(track_label({"lang": "qaa", "codec": "somecodec"}), "qaa (somecodec)")
+
+    def test_repeated_languages_are_numbered_from_their_second_showing(self):
+        tracks = [{"type": "audio", "id": i, "lang": "spa", "codec": "ac3"} for i in (1, 2)]
+        rows, _ = track_entries(tracks, "audio", 1)
+        self.assertEqual([label for _, label in rows],
+                         ["Off", "Spanish (AC-3)", "Spanish (AC-3) (2)"])
 
 
 class MpvFitTests(unittest.TestCase):
@@ -136,7 +153,7 @@ class MpvPropertiesTests(unittest.TestCase):
         engine = _unbound(track_list=[{"type": "audio", "id": 1, "lang": "eng", "selected": True}],
                           aid=1, sid="no")[0]
         tracks = MpvEngine.tracks(engine)
-        self.assertEqual(tracks["audio"], ([(-1, "Off"), (1, "eng")], 1))
+        self.assertEqual(tracks["audio"], ([(-1, "Off"), (1, "English")], 1))
         self.assertEqual(tracks["sub"][0], [(-1, "Off")])
         MpvEngine.select_track(engine, "sub", -1)
         self.assertEqual(engine.player._set, {"sid": "no"})
@@ -251,6 +268,39 @@ class MpvBufferTests(unittest.TestCase):
         self.assertTrue(MpvEngine.seeking(_unbound(seeking=True)[0]))
         self.assertFalse(MpvEngine.seeking(_unbound(seeking=False)[0]))
         self.assertFalse(MpvEngine.seeking(_unbound()[0]))  # unset while nothing plays
+
+
+class MpvMouseTests(unittest.TestCase):
+    """Disc-menu clicks go through discnav with normalized 0..1 coordinates, never pixels:
+    mouse-pos is in OSD units, so FBO pixels misland."""
+
+    def test_click_and_move_reach_discnav_normalized(self):
+        engine, player = _unbound()
+        MpvEngine.menu_mouse(engine, 0.5, 0.25, True)
+        self.assertEqual(player.commands[-1], ("discnav", "mouse-click", "0.5000", "0.2500"))
+        MpvEngine.menu_mouse(engine, 0.5, 0.25, False)
+        self.assertEqual(player.commands[-1], ("discnav", "mouse-move", "0.5000", "0.2500"))
+
+    def test_positions_outside_the_window_land_on_an_edge(self):
+        engine, player = _unbound()
+        MpvEngine.menu_mouse(engine, 2.0, -1.0, True)
+        self.assertEqual(player.commands[-1], ("discnav", "mouse-click", "1.0000", "0.0000"))
+
+    def test_widget_normalizes_pixels_and_ignores_non_menus(self):
+        from isoplay.mpv import MpvVideoWidget
+        QApplication.instance() or QApplication([])
+        engine = Mock()
+        engine.menu_active.return_value = True
+        widget = MpvVideoWidget(engine, None)
+        widget.resize(200, 100)
+        widget.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(50, 25),
+                                          Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        engine.menu_active.return_value = False  # normal playback: nothing to forward
+        engine.menu_mouse.reset_mock()
+        widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(10, 10),
+                                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        engine.menu_mouse.assert_not_called()
 
 
 class VlcMenuTests(unittest.TestCase):

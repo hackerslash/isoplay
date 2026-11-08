@@ -10,11 +10,12 @@ What mpv 0.42 (released 2026-11-05) brings with it:
   no public way to send mouse coordinates to a menu, which is what item 1 is about;
 - its own network layer on libcurl with HTTP/2 and connection reuse.
 
-Input reaches the menu through mpv's input layer: the `mouse <x> <y> [<button>]` command updates
-`mouse-pos` (pixel coordinates of the synthetic render window, whose size is the FBO we render
-into), and an argument-less `discnav mouse-move` / `discnav mouse-click` reads and maps
-`mouse-pos` into source-video coordinates itself. We forward Qt mouse events that way rather
-than repositioning buttons by hand.
+Input reaches the menu through mpv's input layer: `discnav mouse-move` / `discnav mouse-click`
+take normalized 0..1 coordinates (top-left 0,0) and map them from the render window into
+source-video coordinates themselves. Qt mouse events are forwarded that way — normalized by
+the widget's own size, so device pixels and OSD scaling never enter it — rather than
+repositioning buttons by hand. (The `mouse` command's `mouse-pos` is in OSD units, not window
+pixels, so pixel coordinates misland; the explicit discnav arguments skip that layer.)
 
 Rendering: `MpvRenderContext` draws into a QOpenGLWidget's own framebuffer (`paintGL` into
 `defaultFramebufferObject()` with FLIP_Y), so video is an ordinary Qt widget and the four
@@ -86,17 +87,88 @@ def end_to_event(reason):
     return {0: "end", 4: "error"}.get(reason)
 
 
+# ISO 639 codes (mpv reports 3-letter bibliographic, sometimes 2-letter) to the names a
+# track menu shows, the way VLC's own descriptions read.
+LANGS = {
+    "eng": "English", "en": "English",
+    "fra": "French", "fre": "French", "fr": "French",
+    "deu": "German", "ger": "German", "de": "German",
+    "ita": "Italian", "it": "Italian",
+    "spa": "Spanish", "es": "Spanish",
+    "por": "Portuguese", "pt": "Portuguese",
+    "nld": "Dutch", "dut": "Dutch", "nl": "Dutch",
+    "ces": "Czech", "cze": "Czech", "cs": "Czech",
+    "slk": "Slovak", "slo": "Slovak", "sk": "Slovak",
+    "pol": "Polish", "pl": "Polish",
+    "rus": "Russian", "ru": "Russian",
+    "ukr": "Ukrainian", "uk": "Ukrainian",
+    "bul": "Bulgarian", "bg": "Bulgarian",
+    "hrv": "Croatian", "hr": "Croatian",
+    "srp": "Serbian", "sr": "Serbian",
+    "ell": "Greek", "gre": "Greek", "el": "Greek",
+    "hun": "Hungarian", "hu": "Hungarian",
+    "ron": "Romanian", "rum": "Romanian", "ro": "Romanian",
+    "zho": "Chinese", "chi": "Chinese", "zh": "Chinese",
+    "yue": "Cantonese",
+    "kor": "Korean", "ko": "Korean",
+    "jpn": "Japanese", "ja": "Japanese",
+    "ara": "Arabic", "ar": "Arabic",
+    "heb": "Hebrew", "he": "Hebrew",
+    "dan": "Danish", "da": "Danish",
+    "fin": "Finnish", "fi": "Finnish",
+    "nor": "Norwegian", "no": "Norwegian", "nob": "Norwegian", "nno": "Norwegian",
+    "swe": "Swedish", "sv": "Swedish",
+    "tur": "Turkish", "tr": "Turkish",
+    "hin": "Hindi", "hi": "Hindi",
+    "tha": "Thai", "th": "Thai",
+    "vie": "Vietnamese", "vi": "Vietnamese",
+    "ind": "Indonesian", "id": "Indonesian",
+    "msa": "Malay", "may": "Malay", "ms": "Malay",
+    "cat": "Catalan", "ca": "Catalan",
+    "eus": "Basque", "eu": "Basque",
+    "glg": "Galician", "gl": "Galician",
+}
+
+# FFmpeg codec names to the words on the box: what mpv reports, not what people read.
+CODECS = {
+    "truehd": "TrueHD", "mlp": "MLP",
+    "ac3": "AC-3", "eac3": "E-AC-3",
+    "dts": "DTS", "dca": "DTS",
+    "aac": "AAC", "mp3": "MP3", "mp2": "MP2",
+    "flac": "FLAC", "opus": "Opus", "vorbis": "Vorbis",
+    "pcm_bluray": "PCM",
+    "hdmv_pgs_subtitle": "PGS", "pgssub": "PGS",
+    "dvd_subtitle": "VobSub", "vobsub": "VobSub",
+    "dvb_subtitle": "DVB", "xsub": "XSUB",
+    "subrip": "SubRip", "ass": "ASS", "ssa": "SSA",
+    "webvtt": "WebVTT", "mov_text": "TX3G", "eia_608": "EIA-608",
+}
+
+
 def track_label(item):
-    """One line for the track menu, from a track-list entry."""
-    parts = [item.get("title"), " ".join(filter(None, (item.get("lang"), item.get("codec"))))]
-    return " ".join(p for p in parts if p)
+    """One line for the track menu, VLC-style: title, language name and friendly codec."""
+    title = (item.get("title") or "").strip()
+    lang = LANGS.get((item.get("lang") or "").lower(), item.get("lang") or "")
+    codec = CODECS.get((item.get("codec") or "").lower(), item.get("codec") or "")
+    label = " · ".join(p for p in (title, lang) if p)
+    if codec:
+        label = f"{label} ({codec})" if label else codec
+    return label
 
 
 def track_entries(track_list, kind, selected):
     """([(tid, label)], current_tid) for audio or subtitle tracks, with Off first, like libVLC's
-    description lists, which is the shape the app's track menu is built for."""
+    description lists, which is the shape the app's track menu is built for. Identical discs
+    list the same language twice, so repeats are numbered from their second showing."""
     items = [t for t in track_list or () if t.get("type") == kind]
-    rows = [(-1, "Off")] + [(t["id"], track_label(t) or f"Track {t['id']}") for t in items]
+    rows = [(-1, "Off")]
+    seen = {}
+    for t in items:
+        label = track_label(t) or f"Track {t['id']}"
+        seen[label] = seen.get(label, 0) + 1
+        if seen[label] > 1:
+            label = f"{label} ({seen[label]})"
+        rows.append((t["id"], label))
     current = next((t["id"] for t in items if t.get("selected")), selected)
     return rows, current
 
@@ -414,13 +486,12 @@ class MpvEngine:
             pass
 
     def menu_mouse(self, x, y, click):
-        """Pixel position in the render window (the FBO the video is drawn into), then let mpv map
-        it onto the disc itself; click activates the button under the cursor."""
-        player = self.player
+        """Normalized 0..1 position in the render window (top-left 0,0), then let mpv map it
+        onto the disc itself; click activates the button under the cursor."""
         try:
-            player.command("mouse", int(x), int(y))
-            player.command("discnav", "mouse-click" if click else "mouse-move")
-        except Exception:  # noqa: BLE001 - same: menus that take no mouse reject quietly
+            position = f"{max(0.0, min(1.0, float(x))):.4f}", f"{max(0.0, min(1.0, float(y))):.4f}"
+            self.player.command("discnav", "mouse-click" if click else "mouse-move", *position)
+        except Exception:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
             pass
 
 
@@ -436,6 +507,7 @@ class MpvVideoWidget(QOpenGLWidget):
     def __init__(self, engine, parent):
         super().__init__(parent)
         self.engine = engine
+        self.setMouseTracking(True)  # hover must reach disc menus with no button held
         self._gl_ref = None  # the ctypes callback has to outlive initializeGL's scope
         self.frame_ready.connect(self.update, Qt.ConnectionType.QueuedConnection)
 
@@ -475,5 +547,8 @@ class MpvVideoWidget(QOpenGLWidget):
             self._menu_mouse(event, click=True)
 
     def _menu_mouse(self, event, click):
-        dpr = self.devicePixelRatioF()
-        self.engine.menu_mouse(event.position().x() * dpr, event.position().y() * dpr, click)
+        if not self.engine.menu_active():
+            return  # normal playback: the disc has no menu to take the mouse
+        w, h = max(1, self.width()), max(1, self.height())
+        pos = event.position()
+        self.engine.menu_mouse(pos.x() / w, pos.y() / h, click)
