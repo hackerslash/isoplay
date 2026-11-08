@@ -14,7 +14,7 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None)
+                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None, menu_titles=None)
     player.mp.get_time.return_value = 5000
     player.mp.get_title.return_value = 1
     player.mp.get_full_title_descriptions.return_value = [Mock(flags=3), Mock(flags=0)]  # a top menu, a film
@@ -79,6 +79,12 @@ class BufferingTests(unittest.TestCase):
         player.mp.get_title.return_value = 0
         Player.on_event(player, "buffer:0")
         player.flash.assert_called_once_with("")
+
+    def test_the_disc_titles_are_read_once_a_play(self):
+        player = waiting(busy_until=0.0)
+        for _ in range(5):
+            Player.on_event(player, "buffer:10")
+        self.assertEqual(player.mp.get_full_title_descriptions.call_count, 1)
 
     def test_full_buffer_clears_only_after_buffering(self):
         player = waiting(buffering=True, busy_until=0.0)

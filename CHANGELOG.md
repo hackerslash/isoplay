@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A disc's top menu no longer hides behind a "Buffering 0%" spinner: libVLC reports a menu waiting
+  for a choice as buffering, so a disc like Eega looked stuck after its intro. That wait no longer
+  counts toward the slow-connection warning either
+
 ## 0.3.6
 
 - Reopening a disc skips most of its round trips: what a disc was opened with is kept in a disk

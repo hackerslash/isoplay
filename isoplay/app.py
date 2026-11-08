@@ -127,7 +127,7 @@ class Player(QMainWindow):
         self.osd_until = self.busy_until = 0.0
         self.buffering = False
         self.deadline = 0.0
-        self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
+        self.opened_at, self.stuck_at, self.notice, self.menu_titles = 0.0, (-1, 0.0), None, None
         self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
@@ -545,7 +545,7 @@ class Player(QMainWindow):
         self.mp.play()
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
-        self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
+        self.opened_at, self.stuck_at, self.stalls, self.menu_titles = time.monotonic(), (-1, 0.0), [], None
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -602,9 +602,12 @@ class Player(QMainWindow):
         """A disc menu waits for a choice, which libVLC reports as buffering at 0%."""
         if not self.disc:
             return False
-        title = self.mp.get_title()
-        return any(i == title and d.flags & 1  # libvlc_title_menu
-                   for i, d in enumerate(self.mp.get_full_title_descriptions() or ()))
+        if self.menu_titles is None:  # read once a play: python-vlc never frees the list it returns
+            titles = list(self.mp.get_full_title_descriptions() or ())
+            if not titles:
+                return False  # not parsed yet
+            self.menu_titles = {i for i, d in enumerate(titles) if d.flags & 1}  # libvlc_title_menu
+        return self.mp.get_title() in self.menu_titles
 
     def buffering_text(self):
         """Repeated stalls mean the link can't keep up; say so, with what is actually arriving."""
