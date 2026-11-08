@@ -467,6 +467,7 @@ class MpvEngine:
     def set_fit(self, mode, width, height):
         """fit is mpv's own letterboxed fit; fill zooms the picture so it covers the window;
         stretch overrides the aspect to the window's (exact) shape."""
+        self._fit = mode
         params = {}
         try:
             params = self.player.video_params or {}
@@ -484,6 +485,25 @@ class MpvEngine:
             player.video_zoom = 0
 
     # --- disc menus ------------------------------------------------------------------------------------
+
+    def video_rect(self, width, height):
+        """Where the picture is drawn inside a widget of width x height, in the same pixels:
+        fit letterboxes it, fill crops the overflow, stretch distorts it edge to edge. Mouse
+        positions map against this rect, not the widget, so clicks on the bars never reach
+        the disc and 4:3 menus in a wide window still land."""
+        try:
+            params = self.player.video_params or {}
+            vw, vh = params.get("dw") or params.get("w"), params.get("dh") or params.get("h")
+        except Exception:  # noqa: BLE001 - nothing is playing yet
+            vw = vh = None
+        if not vw or not vh or not width or not height:
+            return 0.0, 0.0, float(max(1, width)), float(max(1, height))
+        fit = getattr(self, "_fit", "fit")
+        if fit == "stretch":
+            return 0.0, 0.0, float(width), float(height)
+        scale = (max if fit == "fill" else min)(width / vw, height / vh)
+        dw, dh = vw * scale, vh * scale
+        return (width - dw) / 2, (height - dh) / 2, dw, dh
 
     def navigate(self, action):
         if os.environ.get("ISOPLAY_DEBUG"):
@@ -576,5 +596,9 @@ class MpvVideoWidget(QOpenGLWidget):
         if not active:
             return  # normal playback: the disc has no menu to take the mouse
         w, h = max(1, self.width()), max(1, self.height())
+        ox, oy, dw, dh = self.engine.video_rect(w, h)
         pos = event.position()
-        self.engine.menu_mouse(pos.x() / w, pos.y() / h, click)
+        nx, ny = (pos.x() - ox) / dw, (pos.y() - oy) / dh
+        if not 0.0 <= nx <= 1.0 or not 0.0 <= ny <= 1.0:
+            return  # on the letterbox bars, not the picture: nothing to forward
+        self.engine.menu_mouse(nx, ny, click)

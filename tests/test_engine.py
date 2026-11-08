@@ -305,6 +305,7 @@ class MpvMouseTests(unittest.TestCase):
         QApplication.instance() or QApplication([])
         engine = Mock()
         engine.menu_active.return_value = True
+        engine.video_rect.return_value = (0.0, 0.0, 200.0, 100.0)
         widget = MpvVideoWidget(engine, None)
         widget.resize(200, 100)
         widget.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(50, 25),
@@ -315,6 +316,40 @@ class MpvMouseTests(unittest.TestCase):
         widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(10, 10),
                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
         engine.menu_mouse.assert_not_called()
+
+    def test_clicks_on_the_letterbox_bars_never_reach_the_disc(self):
+        from isoplay.mpv import MpvVideoWidget
+        QApplication.instance() or QApplication([])
+        engine = Mock()
+        engine.menu_active.return_value = True
+        engine.video_rect.return_value = (140.0, 0.0, 840.0, 630.0)  # 4:3 menu in a wide window
+        widget = MpvVideoWidget(engine, None)
+        widget.resize(1120, 630)
+        widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(70, 315),
+                                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        engine.menu_mouse.assert_not_called()
+        widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(560, 315),
+                                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        engine.menu_mouse.assert_called_once_with(0.5, 0.5, True)
+
+    def test_video_rect_letterboxes_fit_and_covers_fill(self):
+        from isoplay.mpv import MpvEngine as E
+        engine, _ = _unbound(video_params={"dw": 853, "dh": 480, "w": 720, "h": 480})
+        E.set_fit(engine, "fit", 1120, 630)
+        ox, oy, dw, dh = E.video_rect(engine, 1120, 630)  # same shape: no bars
+        self.assertAlmostEqual(ox, 0.0, delta=1.0)
+        self.assertAlmostEqual(dw, 1120.0, delta=1.0)
+        engine2, _ = _unbound(video_params={"dw": 640, "dh": 480, "w": 720, "h": 480})
+        E.set_fit(engine2, "fit", 1120, 630)  # a 4:3 menu pillarboxed in the wide window
+        self.assertEqual(E.video_rect(engine2, 1120, 630), (140.0, 0.0, 840.0, 630.0))
+        E.set_fit(engine2, "fill", 1120, 630)  # cropped, so it spills past the widget
+        ox, oy, dw, dh = E.video_rect(engine2, 1120, 630)
+        self.assertLess(oy, 0.0)
+        self.assertGreater(dh, 630.0)
+        E.set_fit(engine2, "stretch", 1120, 630)
+        self.assertEqual(E.video_rect(engine2, 1120, 630), (0.0, 0.0, 1120.0, 630.0))
+        self.assertEqual(E.video_rect(_unbound()[0], 1120, 630),  # nothing playing yet
+                         (0.0, 0.0, 1120.0, 630.0))
 
 
 class VlcMenuTests(unittest.TestCase):
