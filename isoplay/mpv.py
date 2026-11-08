@@ -161,16 +161,23 @@ class MpvEngine:
                 self._emit(name)
 
         self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
+        self._stalled = False     # paused-for-cache: mpv wants data and none is arriving
 
         def _stalled(name, value):
-            if value:
+            self._stalled = bool(value)
+            if self._stalled:
                 self._emit("buffer:0")  # waiting for data
             elif self._cache_state is None:
                 self._emit("buffer:100")  # no demuxer cache (a local file): nothing to report
+            else:
+                self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
 
         def _cache(name, value):
+            # libbluray reads through our callback, so during a stall the demuxer cache can
+            # still read 100 while playback waits; letting that through would clear the
+            # buffering overlay instantly. The stall flag wins until data flows again.
             self._cache_state = value if isinstance(value, (int, float)) else None
-            if self._cache_state is not None:
+            if self._cache_state is not None and not self._stalled:
                 self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
 
         def _video(name, value):
@@ -183,6 +190,8 @@ class MpvEngine:
         player.observe_property("video-format", _video)
 
     def _emit(self, name):
+        if os.environ.get("ISOPLAY_DEBUG"):
+            print(f"[mpv-engine] event {name}", flush=True)
         if self.emit:
             self.emit(name)
 

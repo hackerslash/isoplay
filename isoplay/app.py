@@ -544,6 +544,11 @@ class Player(QMainWindow):
             self.play(self.current, menus=self.use_menus, disc_root=root)
 
     def on_event(self, name):
+        if os.environ.get("ISOPLAY_DEBUG") and name.startswith("buffer:"):
+            now = time.monotonic()
+            print(f"[app buffer] {name} started={self.engine.time() > 0} "
+                  f"buffering={self.buffering} idle={max(self.osd_until, self.busy_until) < now} "
+                  f"menu={self.menu_active()}", flush=True)
         if name.startswith("buffer:"):
             pct = int(name[7:])
             if self.deadline:
