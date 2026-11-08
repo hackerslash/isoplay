@@ -5,8 +5,8 @@
 <h1 align="center">isoplay</h1>
 
 <p align="center">
-  Stream Blu-ray and DVD ISOs straight from an HTTP link, with their disc menus.<br>
-  Nothing to download first, nothing to extract. Local files work too.
+  Play Blu-ray and DVD discs from a link with their menus, including discs in WebDAV folders and
+  zips that VLC can't open.
 </p>
 
 <p align="center">
@@ -15,39 +15,53 @@
 
 ![isoplay playing a Blu-ray disc menu](docs/screenshot.png)
 
-## Streaming
+## Why not just VLC?
 
-Paste a link and the disc opens where you left the index — isoplay fetches only the blocks
-libbluray and libdvdnav actually read, through a local cache with parallel read-ahead. A 50 GB
-Blu-ray starts in seconds and never lands on disk.
+VLC already plays an ISO from a link, and isoplay is libVLC underneath, with the same libbluray
+and libdvdnav. If VLC plays your disc smoothly, keep using it.
 
-- **Any direct link.** No `.iso` needed in the URL. One ranged read decides what the link is
-  from its first bytes, so extensionless download links work.
-- **Zipped discs**, without unpacking. A disc stored uncompressed in a `.zip` is read in place,
-  wherever its `VIDEO_TS` or `BDMV` folder sits inside the archive — including a whole `.iso`
-  stored inside it, which is opened in turn with its menus intact.
-- **ISO9660 containers**, which libbluray can't read, are republished as UDF on the fly.
-- **Everything else playable.** HD DVD, Video CD, DVD-Audio and plain rips of media files have no
-  menu format libVLC can navigate, so their main title is served as itself — numbered `.EVO`,
-  `.VOB` and `.DAT` parts joined back into one stream.
-- **WebDAV shares**, listed with PROPFIND and projected the same way: a `BDMV` or `VIDEO_TS`
-  folder on a share streams with its menus, nothing downloaded and nothing mounted.
-- **Multi-disc images** open a chooser; switch later from **Discs in This Image** in the track menu.
+Where isoplay differs:
 
-The host must support HTTP `Range` requests. A protected host works through a link that
-carries its credentials, as `https://user:pass@host/disc.iso`. Images must already be decrypted (no AACS, so no
-retail UHD as-is).
+**How it reads.** VLC reads a network disc over one connection, one request at a time. isoplay
+fetches several ranges in parallel and reads ahead of the player, which helps on hosts that
+limit each connection. It works out how many connections a host tolerates as it goes, and backs
+off when the host answers 429 or refuses connections. It can't add bandwidth the host or your
+line doesn't have: a disc whose bitrate is above that will buffer here as it would in VLC.
 
-Menus come from the engine that can navigate the format: libdvdnav for DVD, libbluray for
-Blu-ray. HD DVD Advanced Content and DVD-Audio have no open-source navigator in existence, so
-those play their main title without menus.
+**Disc menus over a network.** libbluray and libdvdnav jump around the image constantly while
+a disc opens and its menus run, and over plain HTTP every jump is another round trip. isoplay
+keeps those blocks in memory, fetches a disc's small files in parallel, and keeps them in a
+disk cache, so a menu that took 6 s to load the first time loads instantly the next.
 
-## Also plays
+**Sources VLC can't open from a link at all:**
 
-Local ISOs and `.zip` discs, `VIDEO_TS` and `BDMV` folders, and ordinary video files and links.
-Disc menus include Java (BD-J) menus, for DVD5/DVD9, BD25/BD50 and UHD BD66/BD100. libVLC with
-libbluray and libdvdnav plus a trimmed Java 17 runtime are bundled, so there is nothing else to
-install.
+- A disc folder on a **WebDAV share**. VLC opens single files, not a `BDMV` or `VIDEO_TS` tree;
+  isoplay lists the share and presents the folder as a disc, nothing downloaded or mounted.
+- A disc inside a **`.zip`**, stored uncompressed, wherever its disc folder sits in the archive,
+  and an **`.iso` inside a `.zip`**. A 1000-file season zip opens in about 7 s.
+- **ISO9660-only Blu-ray images**, which libbluray can't read. isoplay re-presents them as UDF on
+  the fly.
+- **HD DVD, Video CD, DVD-Audio** and plain rips of media files, which have no menus libVLC can
+  run. isoplay serves the main title, with numbered `.EVO`, `.VOB` and `.DAT` parts joined back
+  into one stream.
+- **Images holding several discs** open a chooser first.
+
+**Fixes for menus that don't run.** Java (BD-J) menus that draw text need fonts the JDK stopped
+shipping, so isoplay bundles a Java runtime that has them. Some studios' menus still don't run
+on libbluray, Disney's 3D discs among them; when a menu freezes like that, isoplay plays the main
+title instead and says so. A menu waiting for a choice isn't shown as buffering.
+
+## What a link has to be
+
+A direct link to the file (an `.iso`, `.img` or `.zip`, or a download link with no extension:
+isoplay reads the first bytes to tell), or a WebDAV folder ending in `/`. The host has to support
+HTTP `Range` requests. A protected host works with the credentials in the link, as
+`https://user:pass@host/disc.iso`.
+
+Images must already be decrypted. There is no AACS, so retail UHD discs don't play as they are.
+
+Plain video links (`.mkv`, `.mp4` and so on) work too, but those go straight to libVLC, the same
+as in VLC.
 
 ## Install
 
@@ -57,17 +71,19 @@ install.
 | Windows x64 | `isoplay-windows-amd64.zip` | SmartScreen: More info, then Run anyway |
 | Linux x64 | `isoplay-linux-x86_64.tar.gz` | Ubuntu 24.04+ or equivalent, X11 or XWayland |
 
-The app checks for new releases on startup and can install them itself, keeping the old version
-until the new one starts successfully. Turn that off in **Options** on the welcome screen.
+libVLC, libbluray, libdvdnav and a trimmed Java 17 runtime are bundled; there is nothing else to
+install. The app checks for new releases on startup and can install them itself, keeping the old
+version until the new one starts. Turn that off in **Options** on the start screen.
 
 ## Use
 
 Paste a link with ⌘V / Ctrl+V, press ⌘L / Ctrl+L to type one, drop a file or link on the window,
-or run `isoplay <file-or-url>`.
+or run `isoplay <file-or-url>`. Local ISOs, zips, `VIDEO_TS` and `BDMV` folders and video files
+open the same way.
 
 | Key | Action |
 |---|---|
-| Arrows, Return | navigate disc menus (clicks work too) |
+| Arrows, Return | navigate disc menus (on macOS menus don't take clicks yet) |
 | Space | play or pause |
 | M | disc popup menu |
 | ← → (Shift on discs) | seek 10 s |
@@ -75,9 +91,16 @@ or run `isoplay <file-or-url>`.
 | Page Up / Down | previous or next chapter |
 | F | full screen |
 
-The track button holds audio and subtitle tracks, **Add Subtitle File…**, the fit modes
-(fit, fill, stretch) and the disc options. If a disc menu fails, choose
+The track button holds audio and subtitle tracks, **Add Subtitle File…**, the fit modes (fit,
+fill, stretch) and the disc options. If a disc menu misbehaves, choose
 **Play Main Title Without Menus**.
+
+**Options** on the start screen sets whether discs start at their menu and the size of the disk
+cache (2 GB by default, up to 50 GB, or off). The cache keeps what discs were opened with, not
+the film's own stream, so it fills slowly and reopening is what gets faster.
+
+If buffering keeps interrupting, isoplay says **Slow connection** with the rate actually
+arriving. That is the host's limit, and VLC would stall on it too.
 
 ## Run from source
 
@@ -93,9 +116,9 @@ python3 dev.py --tests          # run the test suite
 Nothing is installed outside `.venv` and no bundle is built.
 
 ```
-isoplay/        media.py streams and probes links, webdav.py lists a share, disc_image.py
-                projects ISO9660, zip and remote discs as UDF or lifts a single title out,
-                app.py is the window, widgets.py and theme.py the interface
+isoplay/        media.py streams and probes links, webdav.py lists a share, diskcache.py keeps
+                blocks between plays, disc_image.py projects ISO9660, zip and remote discs as UDF
+                or lifts a single title out, app.py is the window, widgets.py and theme.py the UI
 tests/          unittest suite; test_isoplay.py covers the media layer with no Qt
 build.py        produces the self-contained bundle in dist/
 ```
@@ -109,7 +132,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-build.txt
 
 Linux builds need the distro VLC (`libvlc5 vlc-plugin-base vlc-plugin-video-output libbluray-bdj`).
 Pushing a `v*` tag builds every platform and publishes a release. `ISOPLAY_DEBUG=1` prints the
-libVLC log.
+libVLC log, the ranges the local server answers, and upstream retries, 429s and failures.
 
 ## License
 
