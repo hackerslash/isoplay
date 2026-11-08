@@ -80,6 +80,8 @@ QMenu#optionsMenu::item {{ color: {INK}; padding: 10px 12px; border-radius: 6px;
 QMenu#optionsMenu::item:selected {{ background: rgba(255,255,255,0.08); }}
 QMenu#optionsMenu::item:disabled {{ color: {INK3}; }}
 QMenu#optionsMenu::indicator {{ width: 0; height: 0; }}
+QMenu#optionsMenu::right-arrow {{ image: url({(BASE / "assets/chevron.svg").as_posix()}); width: 10px; height: 10px;
+    margin-right: 10px; }}
 QMenu#optionsMenu::separator {{ height: 1px; background: rgba(255,255,255,0.08); margin: 5px 8px; }}
 QPushButton#preferenceRow {{ background: transparent; border: none; border-radius: 6px; padding: 0; }}
 QPushButton#preferenceRow:hover, QPushButton#preferenceRow:focus {{ background: rgba(255,255,255,0.06); }}
