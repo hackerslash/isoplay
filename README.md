@@ -94,6 +94,12 @@ python3 dev.py --tests          # run the test suite
 .venv/bin/pip install -r requirements-build.txt && .venv/bin/python build.py   # bundle in dist/
 ```
 
+An experimental mpv engine is behind an extra flag: `python3 dev.py --mpv` runs the
+app with [libmpv](https://mpv.io) instead of libVLC, which from mpv 0.42 plays disc images
+directly and lets disc menus take the mouse, the thing libVLC 3 cannot do. It needs mpv 0.42.0
+or newer installed (`brew install mpv`); libVLC stays the default, and libmpv isn't bundled yet.
+`spike_mpv.py` and `docs/spike-mpv.md` cover what still needs proving with real discs.
+
 `media.py` streams and probes links, `webdav.py` lists shares, `diskcache.py` keeps blocks
 between plays, `disc_image.py` presents ISO9660, zip and remote discs as UDF, and `app.py`,
 `widgets.py` and `theme.py` are the interface. Linux builds need the distro VLC

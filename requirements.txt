@@ -1,4 +1,5 @@
 PySide6==6.12.0
 python-vlc==3.0.21203
+python-mpv==1.0.8  # the libmpv engine prototype, only used under ISOPLAY_ENGINE=mpv
 certifi==2026.10.23
 pycdlib==1.22.0

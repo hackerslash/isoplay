@@ -3,7 +3,7 @@ import os
 import time
 import unittest
 from unittest import mock
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from email.message import Message
 from urllib.error import HTTPError
 
@@ -14,12 +14,15 @@ from isoplay.media import prepare
 
 def waiting(**overrides):
     player = Mock(buffering=False, osd_until=0.0, busy_until=float("inf"), disc="bluray", use_menus=True,
-                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None, menu_titles=None)
-    player.mp.get_time.return_value = 5000
-    player.mp.get_title.return_value = 1
-    player.mp.get_full_title_descriptions.return_value = [Mock(flags=3), Mock(flags=0)]  # a top menu, a film
+                  deadline=0.0, stalls=[], stall_from=0.0, proxy=None)
+    player.engine.time.return_value = 5000
+    player.engine.length.return_value = 900_000
+    player.engine.position.return_value = 0.5
+    player.engine.playing.return_value = True
+    player.engine.has_media.return_value = True
+    player.engine.menu_active.return_value = False
     player.buffering_text = lambda: Player.buffering_text(player)
-    player.on_menu = lambda: Player.on_menu(player)
+    player.menu_active = lambda: Player.menu_active(player)
     player.arriving = lambda: Player.arriving(player)
     player.__dict__.update(overrides)
     return player
@@ -70,22 +73,16 @@ class BufferingTests(unittest.TestCase):
 
     def test_a_disc_menu_waiting_for_a_choice_is_not_buffering(self):
         player = waiting(busy_until=0.0)
-        player.mp.get_title.return_value = 0  # the top menu
+        player.engine.menu_active.return_value = True  # the top menu is up
         Player.on_event(player, "buffer:0")
         player.flash.assert_not_called()
         self.assertEqual(player.stalls, [])
 
     def test_a_buffering_spinner_already_up_clears_when_the_menu_appears(self):
         player = waiting(buffering=True)
-        player.mp.get_title.return_value = 0
+        player.engine.menu_active.return_value = True
         Player.on_event(player, "buffer:0")
         player.flash.assert_called_once_with("")
-
-    def test_the_disc_titles_are_read_once_a_play(self):
-        player = waiting(busy_until=0.0)
-        for _ in range(5):
-            Player.on_event(player, "buffer:10")
-        self.assertEqual(player.mp.get_full_title_descriptions.call_count, 1)
 
     def test_full_buffer_clears_only_after_buffering(self):
         player = waiting(buffering=True, busy_until=0.0)
@@ -97,9 +94,9 @@ class StuckMenuTests(unittest.TestCase):
     def stuck(self, length, frozen_for, opened_ago=10):
         now = time.monotonic()
         player = waiting(opened_at=now - opened_ago, stuck_at=(length - 400, now - frozen_for), notice=None)
-        player.mp.get_length.return_value = length
-        player.mp.get_time.return_value = length - 400
-        player.mp.get_position.return_value = 1.0
+        player.engine.length.return_value = length
+        player.engine.time.return_value = length - 400
+        player.engine.position.return_value = 1.0
         Player.watch_menu(player, now)
         return player
 
@@ -120,15 +117,15 @@ class StuckMenuTests(unittest.TestCase):
 
 class StallTests(unittest.TestCase):
     def test_a_black_screen_past_the_deadline_fails_the_open(self):
-        player = waiting(deadline=time.monotonic() - 1, current="http://host/x.bin")
-        player.mp.get_time.return_value = 0
+        player = waiting(deadline=time.monotonic() - 1, current="http://host/x.bin",
+                         engine=Mock(time=Mock(return_value=0)))
         Player.tick(player)
         player.fail.assert_called_once()
 
     def test_a_slow_host_still_sending_data_gets_more_time(self):
         player = waiting(deadline=time.monotonic() - 1, current="http://host/x.iso",
-                         proxy=Mock(rate=Mock(return_value=200_000)))
-        player.mp.get_time.return_value = 0
+                         proxy=Mock(rate=Mock(return_value=200_000)),
+                         engine=Mock(time=Mock(return_value=0)))
         player.controls.isVisible.return_value = False
         Player.tick(player)
         player.fail.assert_not_called()
@@ -136,8 +133,8 @@ class StallTests(unittest.TestCase):
 
     def test_a_host_that_stopped_sending_still_fails(self):
         player = waiting(deadline=time.monotonic() - 1, current="http://host/x.iso",
-                         proxy=Mock(rate=Mock(return_value=0)))
-        player.mp.get_time.return_value = 0
+                         proxy=Mock(rate=Mock(return_value=0)),
+                         engine=Mock(time=Mock(return_value=0)))
         Player.tick(player)
         player.fail.assert_called_once()
 
@@ -176,10 +173,10 @@ class EndedTests(unittest.TestCase):
     def test_recent_records_the_film_only_once_a_frame_arrives(self):
         player = waiting(deadline=time.monotonic() + 30, current="/tmp/film.mkv")
         player.controls.isVisible.return_value = False
-        player.mp.get_time.return_value = 0
+        player.engine.time.return_value = 0
         Player.tick(player)
         player.remember.assert_not_called()
-        player.mp.get_time.return_value = 120
+        player.engine.time.return_value = 120
         Player.tick(player)
         player.remember.assert_called_once_with("/tmp/film.mkv", "bluray")
 
@@ -227,25 +224,24 @@ class FitTests(unittest.TestCase):
         player = waiting(fit=mode)
         player.video.width.return_value, player.video.height.return_value = 1600, 900
         Player.apply_fit(player)
-        return (player.mp.video_set_aspect_ratio.call_args[0][0],
-                player.mp.video_set_crop_geometry.call_args[0][0])
+        return player.engine.set_fit.call_args
 
-    def test_each_mode_uses_only_its_own_lever(self):
-        self.assertEqual(self.shape("fit"), (None, None))
-        self.assertEqual(self.shape("fill"), (None, "1600:900"))
-        self.assertEqual(self.shape("stretch"), ("1600:900", None))
+    def test_the_window_shape_is_handed_to_the_engine_each_time_it_is_needed(self):
+        self.assertEqual(self.shape("fit"), call("fit", 1600, 900))
+        self.assertEqual(self.shape("fill"), call("fill", 1600, 900))
+        self.assertEqual(self.shape("stretch"), call("stretch", 1600, 900))
 
-    def test_a_collapsed_window_never_asks_vlc_for_a_zero_ratio(self):
+    def test_a_collapsed_window_still_names_its_extent(self):
         player = waiting(fit="fill")
         player.video.width.return_value = player.video.height.return_value = 0
         Player.apply_fit(player)
-        self.assertEqual(player.mp.video_set_crop_geometry.call_args[0][0], "1:1")
+        self.assertEqual(player.engine.set_fit.call_args, call("fill", 0, 0))
 
 
 class SubtitleTests(unittest.TestCase):
     def drop(self, path, playing=True):
         player = waiting()
-        player.mp.get_media.return_value = Mock() if playing else None
+        player.engine.has_media.return_value = bool(playing)
         event = Mock()
         event.mimeData.return_value.hasUrls.return_value = False
         event.mimeData.return_value.text.return_value = path

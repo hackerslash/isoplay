@@ -257,14 +257,14 @@ class ProjectionTests(unittest.TestCase):
             with self.subTest(roots=roots):
                 proxy = SimpleNamespace(view=object()) if roots else None
                 player = SimpleNamespace(token=1, ask_disc=True, current="image.iso", use_menus=True,
-                                         chooser=Mock(), stack=Mock(), mp=Mock(), vlc=Mock(),
+                                         chooser=Mock(), stack=Mock(), engine=Mock(),
                                          remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock(),
                                          apply_fit=Mock())
                 result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy,
                           roots or (), roots[0] if roots else None)
                 Player.start(player, 1, result)
                 if roots and len(roots) > 1:
-                    player.mp.play.assert_not_called()
+                    player.engine.open.assert_not_called()
                     player.chooser.set_discs.assert_called_once_with(roots)
                     player.stack.setCurrentWidget.assert_called_once_with(player.chooser)
                     self.assertEqual(player.pending_disc, (1, result))
@@ -273,7 +273,7 @@ class ProjectionTests(unittest.TestCase):
                     player.play.assert_called_once_with("image.iso", menus=True, disc_root="/BONUS")
                 else:
                     player.chooser.set_discs.assert_not_called()
-                    player.mp.play.assert_called_once()
+                    player.engine.open.assert_called_once()
 
     def test_choosing_default_disc_starts_without_asking_again(self):
         result = ("http://127.0.0.1/disc.iso", "bluray", None, ("/FEATURE",), "/FEATURE")

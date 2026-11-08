@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from isoplay import media, updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
-from isoplay.media import UA, display_name, fmt, is_url, normalize, prepare  # noqa: E402
+from isoplay.engine import create_engine  # noqa: E402
+from isoplay.media import display_name, fmt, is_url, normalize, prepare  # noqa: E402
 from isoplay.diskcache import GB, DiskCache  # noqa: E402
 from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, OPTIONS_CSS, svg_icon, tabular  # noqa: E402
@@ -50,9 +51,8 @@ class Bridge(QObject):
 
 
 class Player(QMainWindow):
-    NAV = {Qt.Key_Up: vlc.NavigateMode.up, Qt.Key_Down: vlc.NavigateMode.down,
-           Qt.Key_Left: vlc.NavigateMode.left, Qt.Key_Right: vlc.NavigateMode.right,
-           Qt.Key_Return: vlc.NavigateMode.activate, Qt.Key_Enter: vlc.NavigateMode.activate}
+    NAV = {Qt.Key_Up: "up", Qt.Key_Down: "down", Qt.Key_Left: "left", Qt.Key_Right: "right",
+           Qt.Key_Return: "select", Qt.Key_Enter: "select"}
 
     def __init__(self):
         super().__init__()
@@ -65,11 +65,9 @@ class Player(QMainWindow):
         cache_gb = self.settings.value("cache/gb", 2, type=int)
         media.DISK = DiskCache(Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "blocks",
                                cache_gb * GB)
-        self.vlc = vlc.Instance(["--no-video-title-show", "--network-caching=3000"]
-                                + (["-vv"] if os.environ.get("ISOPLAY_DEBUG") else []))
-        self.mp = self.vlc.media_player_new()
-        self.mp.video_set_key_input(False)
-        self.mp.video_set_mouse_input(True)
+        # The engine (libVLC today, libmpv under ISOPLAY_ENGINE=mpv) owns playback and the
+        # surface the video is drawn in; the rest of this class talks to it and nothing else.
+        self.engine = create_engine()
         self.disc = self.proxy = self.current = None
         self.disc_root, self.discs = None, ()
         self.ask_disc = False
@@ -82,30 +80,21 @@ class Player(QMainWindow):
         self.bridge = Bridge()
         self.bridge.prepared.connect(self.start)
         self.bridge.event.connect(self.on_event)
-        ev = self.mp.event_manager()
-        for t, name in ((vlc.EventType.MediaPlayerEncounteredError, "error"),
-                        (vlc.EventType.MediaPlayerVout, "vout"),
-                        (vlc.EventType.MediaPlayerEndReached, "end")):
-            ev.event_attach(t, lambda e, n=name: self.bridge.event.emit(n))
-        ev.event_attach(vlc.EventType.MediaPlayerBuffering,
-                        lambda e: self.bridge.event.emit(f"buffer:{e.u.new_cache:.0f}"))
+        self.engine.set_bridge(self.bridge.event.emit)
 
         self.updater = UpdateUI(self, __version__, self.settings, lambda: [self.current] if self.current else [])
         self.build_actions()
         self.stack = QStackedWidget()
         self.welcome = self.build_welcome()
         self.stack.addWidget(self.welcome)
-        self.video = QFrame()
-        self.video.setStyleSheet("background:#000")
-        self.video.setAttribute(Qt.WA_NativeWindow)
+        self.video = self.engine.surface(self)
         self.stack.addWidget(self.video)
         self.chooser = DiscChooser()
         self.chooser.selected.connect(self.choose_disc)
         self.chooser.cancelled.connect(self.close_video)
         self.stack.addWidget(self.chooser)
         self.setCentralWidget(self.stack)
-        wid = int(self.video.winId())
-        {"darwin": self.mp.set_nsobject, "win32": self.mp.set_hwnd}.get(sys.platform, self.mp.set_xwindow)(wid)
+        self.engine.settle(self.video)
 
         self.controls = Overlay(self, clickable=True)
         self.build_controls()
@@ -127,7 +116,7 @@ class Player(QMainWindow):
         self.osd_until = self.busy_until = 0.0
         self.buffering = False
         self.deadline = 0.0
-        self.opened_at, self.stuck_at, self.notice, self.menu_titles = 0.0, (-1, 0.0), None, None
+        self.opened_at, self.stuck_at, self.notice = 0.0, (-1, 0.0), None
         self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
@@ -160,7 +149,7 @@ class Player(QMainWindow):
             item.setChecked(mode == self.fit)
             self.fit_group.addAction(item)
         self.act_pause = self.action("Play/Pause", None, self.toggle_pause)
-        self.act_discmenu = self.action("Disc Menu", None, lambda: self.mp.navigate(vlc.NavigateMode.popup))
+        self.act_discmenu = self.action("Disc Menu", None, lambda: self.engine.navigate("popup"))
         self.act_menus = self.action("Start Discs at Their Menu", None, self.menus_changed, checkable=True)
         self.act_menus.setChecked(self.settings.value("menus", True, type=bool))
         self.act_main = self.action("Play Main Title Without Menus", None, self.replay_main)
@@ -336,7 +325,7 @@ class Player(QMainWindow):
         left.setSpacing(4)
         self.mute_btn = btn("volume", "Mute", self.toggle_mute, 17)
         self.vol = QSlider(Qt.Horizontal, maximum=100, value=100, focusPolicy=Qt.NoFocus, fixedWidth=72)
-        self.vol.valueChanged.connect(self.mp.audio_set_volume)
+        self.vol.valueChanged.connect(self.engine.set_volume)
         left.addWidget(self.mute_btn)
         left.addWidget(self.vol)
         left.addStretch()
@@ -350,7 +339,7 @@ class Player(QMainWindow):
         right = QHBoxLayout()
         right.setSpacing(2)
         right.addStretch()
-        self.menu_btn = btn("disc", "Disc menu (M)", lambda: self.mp.navigate(vlc.NavigateMode.popup))
+        self.menu_btn = btn("disc", "Disc menu (M)", lambda: self.engine.navigate("popup"))
         self.tracks_btn = btn("tracks", "Audio, subtitles and disc options", self.tracks_menu)
         self.full_btn = btn("full", "Full screen (F)", self.toggle_full)
         for b in (self.menu_btn, self.tracks_btn, self.full_btn):
@@ -365,8 +354,8 @@ class Player(QMainWindow):
         self.pos_lbl = tabular(QLabel("0:00", objectName="time", minimumWidth=44,
                                       alignment=Qt.AlignRight | Qt.AlignVCenter))
         self.seek = QSlider(Qt.Horizontal, maximum=10000, focusPolicy=Qt.NoFocus)
-        self.seek.sliderReleased.connect(lambda: self.mp.set_position(self.seek.value() / 10000))
-        self.seek.sliderMoved.connect(lambda v: self.pos_lbl.setText(fmt(int(self.mp.get_length() * v / 10000))))
+        self.seek.sliderReleased.connect(lambda: self.engine.set_position(self.seek.value() / 10000))
+        self.seek.sliderMoved.connect(lambda v: self.pos_lbl.setText(fmt(int(self.engine.length() * v / 10000))))
         self.len_btn = tabular(QPushButton("0:00", objectName="time", focusPolicy=Qt.NoFocus, minimumWidth=50,
                                            cursor=Qt.PointingHandCursor, toolTip="Show remaining or total time"))
         self.len_btn.clicked.connect(lambda: setattr(self, "remaining", not self.remaining))
@@ -426,7 +415,7 @@ class Player(QMainWindow):
             self.play(f)
 
     def add_subtitles(self):
-        if not self.mp.get_media():
+        if not self.engine.has_media():
             return
         start = str(Path(self.current).parent) if self.current and not is_url(self.current) else ""
         path, _ = QFileDialog.getOpenFileName(self, "Add Subtitle File", start,
@@ -436,7 +425,7 @@ class Player(QMainWindow):
 
     def load_subtitles(self, path):
         uri = path if is_url(path) else Path(path).as_uri()
-        ok = self.mp.add_slave(vlc.MediaSlaveType.subtitle, uri, True) == 0
+        ok = self.engine.subtitles(uri)
         self.flash(f"Subtitles: {display_name(path)}" if ok else "Couldn't load those subtitles", 2.0)
 
     def set_fit(self, mode):
@@ -447,9 +436,7 @@ class Player(QMainWindow):
 
     def apply_fit(self):
         """Fill crops the overflow, stretch distorts; both track the window's own shape."""
-        shape = f"{max(self.video.width(), 1)}:{max(self.video.height(), 1)}"
-        self.mp.video_set_aspect_ratio(shape if self.fit == "stretch" else None)
-        self.mp.video_set_crop_geometry(shape if self.fit == "fill" else None)
+        self.engine.set_fit(self.fit, self.video.width(), self.video.height())
 
     def browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Disc Folder", self.settings.value("dir", ""))
@@ -484,7 +471,7 @@ class Player(QMainWindow):
 
     def close_video(self):
         self.token += 1
-        self.mp.stop()
+        self.engine.close()
         if self.proxy:
             self.proxy.close()
             self.proxy = None
@@ -535,19 +522,10 @@ class Player(QMainWindow):
             self.stack.setCurrentWidget(self.chooser)
             self.osd_until = self.busy_until = 0
             return
-        media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
-        media.add_option(f":http-user-agent={UA}")
-        if mrl.lower().endswith(".evo"):
-            media.add_option(":demux=avformat")
-        if self.disc == "dvd" and self.use_menus and not mrl.startswith("dvd:"):
-            media.add_option(":demux=dvdnav")  # auto-probe picks raw PS over HTTP and loses menus
-        if self.disc == "bluray" and not self.use_menus:
-            media.add_option(":no-bluray-menu")
-        self.mp.set_media(media)
-        self.mp.play()
+        self.engine.open(mrl, kind=self.disc, menus=self.use_menus)
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
-        self.opened_at, self.stuck_at, self.stalls, self.menu_titles = time.monotonic(), (-1, 0.0), [], None
+        self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
@@ -570,10 +548,10 @@ class Player(QMainWindow):
             pct = int(name[7:])
             if self.deadline:
                 self.deadline = time.monotonic() + STALL
-            started = self.mp.get_time() > 0
+            started = self.engine.time() > 0
             idle = max(self.osd_until, self.busy_until) < time.monotonic()
             if pct < 100 and started and (self.buffering or idle):
-                if self.on_menu():  # waiting for a choice, not for data
+                if self.menu_active():  # waiting for a choice, not for data
                     if self.buffering:
                         self.flash("")
                     return
@@ -600,16 +578,10 @@ class Player(QMainWindow):
             else:
                 self.fail("This wouldn't play")
 
-    def on_menu(self):
-        """A disc menu waits for a choice, which libVLC reports as buffering at 0%."""
-        if not self.disc:
-            return False
-        if self.menu_titles is None:  # read once a play: python-vlc never frees the list it returns
-            titles = list(self.mp.get_full_title_descriptions() or ())
-            if not titles:
-                return False  # not parsed yet
-            self.menu_titles = {i for i, d in enumerate(titles) if d.flags & 1}  # libvlc_title_menu
-        return self.mp.get_title() in self.menu_titles
+    def menu_active(self):
+        """A disc menu waits for a choice, which the engine knows (libVLC reports it as buffering
+        at 0%; mpv through its disc-menu-active property)."""
+        return bool(self.disc) and self.engine.menu_active()
 
     def arriving(self):
         return self.proxy is not None and hasattr(self.proxy, "rate") and self.proxy.rate() > 0
@@ -626,13 +598,12 @@ class Player(QMainWindow):
     # --- transport ---------------------------------------------------------------------------------
 
     def toggle_pause(self):
-        if self.mp.get_media():
-            self.mp.pause()
-            QTimer.singleShot(120, lambda: self.flash("Paused" if not self.mp.is_playing() else "Playing", 1.2))
+        if self.engine.has_media():
+            self.engine.pause()
+            QTimer.singleShot(120, lambda: self.flash("Paused" if not self.engine.playing() else "Playing", 1.2))
 
     def toggle_mute(self):
-        self.mp.audio_toggle_mute()
-        muted = bool(self.mp.audio_get_mute())
+        muted = self.engine.toggle_mute()
         self.mute_btn.setIcon(svg_icon("muted" if muted else "volume"))
         self.flash("Muted" if muted else f"Volume {self.vol.value()}%", 1.2)
 
@@ -641,34 +612,30 @@ class Player(QMainWindow):
         self.flash(f"Volume {self.vol.value()}%", 1.2)
 
     def seek_by(self, ms):
-        self.mp.set_time(max(0, self.mp.get_time() + ms))
-        self.flash(f"{fmt(self.mp.get_time() + ms)} / {fmt(self.mp.get_length())}", 1.2)
+        target = max(0, self.engine.time() + ms)
+        self.engine.seek(target)
+        self.flash(f"{fmt(target)} / {fmt(self.engine.length())}", 1.2)
 
     def step(self, d):
-        if self.mp.get_chapter_count() > 1:
-            self.mp.next_chapter() if d > 0 else self.mp.previous_chapter()
-            QTimer.singleShot(150, lambda: self.flash(f"Chapter {self.mp.get_chapter() + 1}", 1.2))
+        if self.engine.chapter_count() > 1:
+            self.engine.step_chapter(d)
+            QTimer.singleShot(150, lambda: self.flash(f"Chapter {self.engine.chapter() + 1}", 1.2))
         else:
             self.seek_by(d * 10000)
 
     def tracks_menu(self):
         menu = QMenu(self)
-        for title, describe, current, select in (
-                ("Audio", self.mp.audio_get_track_description, self.mp.audio_get_track, self.mp.audio_set_track),
-                ("Subtitles", self.mp.video_get_spu_description, self.mp.video_get_spu, self.mp.video_set_spu)):
+        for title, kind in (("Audio", "audio"), ("Subtitles", "sub")):
+            tracks, current = self.engine.tracks()[kind]
             if not menu.isEmpty():
                 menu.addSeparator()
             menu.addAction(title).setEnabled(False)
-            cur = current()
-            tracks = describe() or []
-            for tid, name in tracks:
-                label = name.decode(errors="replace") if isinstance(name, bytes) else str(name)
-                if tid == -1:
-                    label = "Off"
+            for tid, label in tracks:
                 a = menu.addAction(label)
                 a.setCheckable(True)
-                a.setChecked(tid == cur)
-                a.triggered.connect(lambda _=False, t=tid, s=select, n=title, lb=label: (s(t), self.flash(f"{n}: {lb}", 1.5)))
+                a.setChecked(tid == current)
+                a.triggered.connect(lambda _=False, t=tid, k=kind, lb=label: (self.engine.select_track(k, t),
+                                                                             self.flash(f"{title}: {lb}", 1.5)))
             if not tracks:
                 menu.addAction("None").setEnabled(False)
         menu.addAction(self.act_subs)
@@ -742,7 +709,7 @@ class Player(QMainWindow):
             return
         now = time.monotonic()
         if self.deadline:
-            if self.mp.get_time() > 0:  # the first frame is what makes this worth remembering
+            if self.engine.time() > 0:  # the first frame is what makes this worth remembering
                 self.deadline = 0
                 self.remember(self.current, self.disc)
             elif now > self.deadline:
@@ -760,7 +727,7 @@ class Player(QMainWindow):
                 self.last_move = now
         active = QApplication.applicationState() == Qt.ApplicationActive and not self.isMinimized()
         on_video = self.stack.currentWidget() is self.video
-        playing = self.mp.is_playing()
+        playing = self.engine.playing()
         hovering = self.controls.isVisible() and self.controls.geometry().contains(pos)
         busy = playing or (bool(self.disc) and self.use_menus)  # a still menu reports "not playing"
         show = active and on_video and (not busy or now - self.last_move < 2.2 or hovering)
@@ -776,9 +743,9 @@ class Player(QMainWindow):
             icon = self.play_icons[bool(playing)]
             if self.play_btn.icon().cacheKey() != icon.cacheKey():
                 self.play_btn.setIcon(icon)
-            length, t = self.mp.get_length(), self.mp.get_time()
+            length, t = self.engine.length(), self.engine.time()
             if not self.seek.isSliderDown():
-                self.seek.setValue(int(self.mp.get_position() * 10000))
+                self.seek.setValue(int(self.engine.position() * 10000))
                 self.pos_lbl.setText(fmt(t))
             self.len_btn.setText(f"-{fmt(length - t)}" if self.remaining and length > 0 else fmt(length))
 
@@ -787,8 +754,8 @@ class Player(QMainWindow):
         just after opening; a still menu never looks like that, so play the main title instead."""
         if now - self.opened_at >= 120:
             return
-        t = self.mp.get_time()
-        stuck = self.mp.get_length() > 10 * 60_000 and self.mp.get_position() >= 0.999
+        t = self.engine.time()
+        stuck = self.engine.length() > 10 * 60_000 and self.engine.position() >= 0.999
         if not stuck or t != self.stuck_at[0]:
             self.stuck_at = (t, now)
         elif now - self.stuck_at[1] > STUCK:
@@ -826,11 +793,11 @@ class Player(QMainWindow):
         elif k in (Qt.Key_Up, Qt.Key_Down) and not disc_nav:
             self.nudge_volume(5 if k == Qt.Key_Up else -5)
         elif k in self.NAV and disc_nav:
-            self.mp.navigate(self.NAV[k])
+            self.engine.navigate(self.NAV[k])
         elif k == Qt.Key_Space:
             self.toggle_pause()
         elif k == Qt.Key_M:
-            self.mp.navigate(vlc.NavigateMode.popup)
+            self.engine.navigate("popup")
         elif k == Qt.Key_F:
             self.toggle_full()
         elif k in (Qt.Key_PageUp, Qt.Key_PageDown):
@@ -862,14 +829,15 @@ class Player(QMainWindow):
             src = u.toLocalFile() if u.isLocalFile() else u.toString()
         else:
             src = md.text().strip()
-        if Path(src).suffix.lower() in SUB_EXT and self.mp.get_media():
+        if Path(src).suffix.lower() in SUB_EXT and self.engine.has_media():
             self.load_subtitles(src)  # a subtitle dropped onto a playing film is not a new film
         else:
             self.play(src)
 
     def closeEvent(self, e):
         self.timer.stop()
-        self.mp.stop()
+        self.engine.close()
+        self.engine.shutdown()
         if self.proxy:
             self.proxy.close()
         super().closeEvent(e)

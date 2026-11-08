@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Behind an experimental **mpv engine**, an opt-in prototype of the alternative to libVLC that
+  mpv 0.42 makes possible: direct `.iso` playback, and disc menus that take mouse input
+  (`discnav mouse-move`/`mouse-click`), which libVLC 3 has no public way to receive. Video is
+  drawn by MpvRenderContext into a Qt OpenGL widget instead of native windows, so overlays are
+  ordinary widgets and menus take clicks. Run it with `python dev.py --mpv`; the default engine
+  stays libVLC. Needs mpv 0.42.0 or newer (older versions have disc menus back), sees
+  `futureplan.md` item 1, and isn't bundled yet: libmpv comes from the system
+
 ## 0.3.7
 
 - A disc's top menu no longer hides behind a "Buffering 0%" spinner: libVLC reports a menu waiting
