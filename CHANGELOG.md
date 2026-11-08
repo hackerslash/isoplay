@@ -5,6 +5,9 @@
 - A disc's top menu no longer hides behind a "Buffering 0%" spinner: libVLC reports a menu waiting
   for a choice as buffering, so a disc like Eega looked stuck after its intro. That wait no longer
   counts toward the slow-connection warning either
+- A slow host no longer gets an open called off: the 45 s "Nothing played from this" limit now
+  only applies while no data is arriving, so a disc that takes a minute to show its first frame
+  plays instead of being abandoned
 
 ## 0.3.6
 

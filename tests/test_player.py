@@ -20,6 +20,7 @@ def waiting(**overrides):
     player.mp.get_full_title_descriptions.return_value = [Mock(flags=3), Mock(flags=0)]  # a top menu, a film
     player.buffering_text = lambda: Player.buffering_text(player)
     player.on_menu = lambda: Player.on_menu(player)
+    player.arriving = lambda: Player.arriving(player)
     player.__dict__.update(overrides)
     return player
 
@@ -120,6 +121,22 @@ class StuckMenuTests(unittest.TestCase):
 class StallTests(unittest.TestCase):
     def test_a_black_screen_past_the_deadline_fails_the_open(self):
         player = waiting(deadline=time.monotonic() - 1, current="http://host/x.bin")
+        player.mp.get_time.return_value = 0
+        Player.tick(player)
+        player.fail.assert_called_once()
+
+    def test_a_slow_host_still_sending_data_gets_more_time(self):
+        player = waiting(deadline=time.monotonic() - 1, current="http://host/x.iso",
+                         proxy=Mock(rate=Mock(return_value=200_000)))
+        player.mp.get_time.return_value = 0
+        player.controls.isVisible.return_value = False
+        Player.tick(player)
+        player.fail.assert_not_called()
+        self.assertGreater(player.deadline, time.monotonic())
+
+    def test_a_host_that_stopped_sending_still_fails(self):
+        player = waiting(deadline=time.monotonic() - 1, current="http://host/x.iso",
+                         proxy=Mock(rate=Mock(return_value=0)))
         player.mp.get_time.return_value = 0
         Player.tick(player)
         player.fail.assert_called_once()

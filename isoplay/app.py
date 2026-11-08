@@ -537,6 +537,8 @@ class Player(QMainWindow):
             return
         media = self.vlc.media_new(mrl) if "://" in mrl else self.vlc.media_new_path(mrl)
         media.add_option(f":http-user-agent={UA}")
+        if mrl.lower().endswith(".evo"):
+            media.add_option(":demux=avformat")
         if self.disc == "dvd" and self.use_menus and not mrl.startswith("dvd:"):
             media.add_option(":demux=dvdnav")  # auto-probe picks raw PS over HTTP and loses menus
         if self.disc == "bluray" and not self.use_menus:
@@ -609,13 +611,16 @@ class Player(QMainWindow):
             self.menu_titles = {i for i, d in enumerate(titles) if d.flags & 1}  # libvlc_title_menu
         return self.mp.get_title() in self.menu_titles
 
+    def arriving(self):
+        return self.proxy is not None and hasattr(self.proxy, "rate") and self.proxy.rate() > 0
+
     def buffering_text(self):
         """Repeated stalls mean the link can't keep up; say so, with what is actually arriving."""
         now = time.monotonic()
         ongoing = self.buffering and now - self.stall_from >= LONG_STALL
         if sum(now - t < SLOW_WINDOW for t in self.stalls) + ongoing < SLOW_STALLS:
             return "Buffering"
-        rate = self.proxy.rate() if self.proxy is not None and hasattr(self.proxy, "rate") else 0
+        rate = self.proxy.rate() if self.arriving() else 0
         return f"Buffering\nSlow connection ({rate / 1e6:.1f} MB/s)" if rate else "Buffering\nSlow connection"
 
     # --- transport ---------------------------------------------------------------------------------
@@ -741,8 +746,11 @@ class Player(QMainWindow):
                 self.deadline = 0
                 self.remember(self.current, self.disc)
             elif now > self.deadline:
-                self.fail("Nothing played from this")
-                return
+                if self.arriving():  # a slow host is not a dead one: keep waiting while data comes in
+                    self.deadline = now + STALL
+                else:
+                    self.fail("Nothing played from this")
+                    return
         if self.disc == "bluray" and self.use_menus:
             self.watch_menu(now)
         pos = QCursor.pos()
