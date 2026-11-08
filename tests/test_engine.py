@@ -258,6 +258,16 @@ class MpvBufferTests(unittest.TestCase):
         self.fire(player, "seeking", False)
         self.assertEqual(events[-1], "buffer:100")
 
+    def test_cache_fill_mid_seek_reports_progress_not_a_clear(self):
+        _, player, events = self.engine()
+        self.fire(player, "seeking", True)
+        self.fire(player, "cache-buffering-state", 35)  # data actually arriving mid-stall
+        self.assertEqual(events, ["buffer:0", "buffer:35"])
+        self.fire(player, "cache-buffering-state", 100)  # stale full-reading: held back
+        self.assertEqual(events, ["buffer:0", "buffer:35"])
+        self.fire(player, "seeking", False)
+        self.assertEqual(events[-1], "buffer:100")
+
     def test_open_resets_seek_and_stall_state(self):
         engine, player = _unbound()
         engine._stalled, engine._seeking, engine._cache_state, engine._vout = True, True, 50, True

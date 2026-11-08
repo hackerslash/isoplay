@@ -569,7 +569,10 @@ class Player(QMainWindow):
                     return
                 if not self.buffering:
                     self.stall_from = time.monotonic()
-                self.flash(self.buffering_text(), sticky=True, busy=True, percent=pct)
+                # 0 means stalled with nothing to count yet: spin without a number until the
+                # engine reports real fill in between, instead of freezing on "0%".
+                self.flash(self.buffering_text(), sticky=True, busy=True,
+                           percent=pct if pct > 0 else None)
                 self.buffering = True
             elif pct >= 100 and self.buffering:
                 now = time.monotonic()
@@ -738,7 +741,7 @@ class Player(QMainWindow):
                 self.seek_from = now
             elif now - self.seek_from >= SEEK_GRACE and self.busy_until <= now:
                 self.stall_from = now
-                self.flash(self.buffering_text(), sticky=True, busy=True, percent=0)
+                self.flash(self.buffering_text(), sticky=True, busy=True, percent=None)
                 self.buffering = True
         else:
             self.seek_from = 0.0

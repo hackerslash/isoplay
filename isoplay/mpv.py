@@ -280,7 +280,13 @@ class MpvEngine:
 
         def _cache(name, value):
             self._cache_state = value if isinstance(value, (int, float)) else None
-            if self._cache_state is not None and not self._stalled and not self._seeking:
+            if self._cache_state is None:
+                return
+            if self._stalled or self._seeking:
+                if self._cache_state >= 100:
+                    return  # stale full-reading while blocked; the stall owns the overlay
+                self._emit(f"buffer:{max(0, int(self._cache_state))}")  # real progress mid-stall
+            else:
                 self._report()
 
         def _seeking(name, value):
@@ -480,19 +486,28 @@ class MpvEngine:
     # --- disc menus ------------------------------------------------------------------------------------
 
     def navigate(self, action):
+        if os.environ.get("ISOPLAY_DEBUG"):
+            print(f"[mpv-engine] discnav {action} menu-active={self.menu_active()}", flush=True)
         try:
             self.player.command("discnav", action)
-        except Exception:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
-            pass
+        except Exception as e:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
+            if os.environ.get("ISOPLAY_DEBUG"):
+                print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
 
     def menu_mouse(self, x, y, click):
         """Normalized 0..1 position in the render window (top-left 0,0), then let mpv map it
         onto the disc itself; click activates the button under the cursor."""
+        x = max(0.0, min(1.0, float(x)))
+        y = max(0.0, min(1.0, float(y)))
+        action = "mouse-click" if click else "mouse-move"
+        if os.environ.get("ISOPLAY_DEBUG"):
+            print(f"[mpv-engine] discnav {action} {x:.4f} {y:.4f} "
+                  f"menu-active={self.menu_active()}", flush=True)
         try:
-            position = f"{max(0.0, min(1.0, float(x))):.4f}", f"{max(0.0, min(1.0, float(y))):.4f}"
-            self.player.command("discnav", "mouse-click" if click else "mouse-move", *position)
-        except Exception:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
-            pass
+            self.player.command("discnav", action, f"{x:.4f}", f"{y:.4f}")
+        except Exception as e:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
+            if os.environ.get("ISOPLAY_DEBUG"):
+                print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
 
 
 # --- the widget -----------------------------------------------------------------------------------------
@@ -547,7 +562,13 @@ class MpvVideoWidget(QOpenGLWidget):
             self._menu_mouse(event, click=True)
 
     def _menu_mouse(self, event, click):
-        if not self.engine.menu_active():
+        active = self.engine.menu_active()
+        if os.environ.get("ISOPLAY_DEBUG"):
+            pos = event.position()
+            print(f"[mpv-engine] qt {'click' if click else 'move'} "
+                  f"{pos.x():.0f},{pos.y():.0f} of {self.width()}x{self.height()} "
+                  f"menu-active={active}", flush=True)
+        if not active:
             return  # normal playback: the disc has no menu to take the mouse
         w, h = max(1, self.width()), max(1, self.height())
         pos = event.position()

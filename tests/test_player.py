@@ -102,6 +102,11 @@ class BufferingTests(unittest.TestCase):
         Player.on_event(player, "buffer:10")
         player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=10)
 
+    def test_a_stall_with_no_fill_counts_spins_without_a_number(self):
+        player = waiting(busy_until=0.0)
+        Player.on_event(player, "buffer:0")
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=None)
+
 
 class SeekWatchdogTests(unittest.TestCase):
     """A seek mpv never reports as buffering (small files have no cache events) still earns
@@ -121,7 +126,7 @@ class SeekWatchdogTests(unittest.TestCase):
         self.assertNotEqual(player.seek_from, 0.0)
         player.seek_from -= 1.0  # the seek has been hanging past its grace period
         Player.tick(player)
-        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=0)
+        player.flash.assert_called_once_with("Buffering", sticky=True, busy=True, percent=None)
         self.assertTrue(player.buffering)
 
     def test_a_finished_seek_resets_the_clock(self):
