@@ -15,6 +15,19 @@
 
 ![isoplay playing a Blu-ray disc menu](docs/screenshot.png)
 
+## Why this exists
+
+Full disc rips are big. A Blu-ray image is 25 to 100 GB, and more and more of them sit on remote
+storage, a debrid service, a WebDAV share or a plain download link, rather than on a local disk.
+Downloading the whole image to watch it, and extracting it first when it comes zipped, takes
+longer than the film.
+
+Playing straight from the link avoids that, but only if the player can open what the link points
+at. Many of these links point at things a player can't open: a disc folder on a share, a disc
+inside a zip, an image libbluray can't read. isoplay exists to play those discs the way they
+were authored, menus included, from wherever they are stored, with nothing downloaded or mounted
+first.
+
 ## Why not just VLC?
 
 VLC already plays an ISO from a link, and isoplay is libVLC underneath, with the same libbluray
