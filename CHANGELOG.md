@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.7
 
 - A disc's top menu no longer hides behind a "Buffering 0%" spinner: libVLC reports a menu waiting
   for a choice as buffering, so a disc like Eega looked stuck after its intro. That wait no longer
