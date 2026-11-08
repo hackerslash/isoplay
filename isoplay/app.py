@@ -601,8 +601,7 @@ class Player(QMainWindow):
         if sum(now - t < SLOW_WINDOW for t in self.stalls) + ongoing < SLOW_STALLS:
             return "Buffering"
         rate = self.proxy.rate() if self.proxy is not None and hasattr(self.proxy, "rate") else 0
-        arriving = f" (about {rate / 1e6:.1f} MB/s arriving)" if rate else ""
-        return f"Buffering\nThis connection is too slow for this video{arriving}"
+        return f"Buffering\nSlow connection ({rate / 1e6:.1f} MB/s)" if rate else "Buffering\nSlow connection"
 
     # --- transport ---------------------------------------------------------------------------------
 

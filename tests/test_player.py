@@ -50,8 +50,7 @@ class BufferingTests(unittest.TestCase):
             self.stall(player, 5)
         Player.on_event(player, "buffer:10")
         text = player.flash.call_args.args[0]
-        self.assertIn("too slow", text)
-        self.assertIn("5.3 MB/s", text)
+        self.assertEqual(text, "Buffering\nSlow connection (5.3 MB/s)")
 
     def test_brief_buffering_after_seeks_and_menus_never_says_too_slow(self):
         player = waiting(busy_until=0.0, proxy=Mock(rate=Mock(return_value=5_300_000)))
