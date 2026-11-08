@@ -32,6 +32,7 @@ import ctypes
 import ctypes.util
 import os
 import re
+import time
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
@@ -549,6 +550,7 @@ class MpvVideoWidget(QOpenGLWidget):
         self.engine = engine
         self.setMouseTracking(True)  # hover must reach disc menus with no button held
         self._gl_ref = None  # the ctypes callback has to outlive initializeGL's scope
+        self._last_mouse = (0.0, 0.0, 0.0)  # last forwarded position and when: moves coalesce
         self.frame_ready.connect(self.update, Qt.ConnectionType.QueuedConnection)
 
     def initializeGL(self):
@@ -609,4 +611,14 @@ class MpvVideoWidget(QOpenGLWidget):
         nx, ny = (pos.x() - ox) / dw, (pos.y() - oy) / dh
         if not 0.0 <= nx <= 1.0 or not 0.0 <= ny <= 1.0:
             return  # on the letterbox bars, not the picture: nothing to forward
+        if not click:
+            # Tracking reports every pixel, and each report is a synchronous round trip
+            # into mpv that blocks this thread; forwarding all of them queues stale
+            # positions behind the cursor, which is what hover lag is. Coalesce to the
+            # latest position instead. Clicks always go through immediately.
+            now = time.monotonic()
+            lx, ly, lt = self._last_mouse
+            if (nx, ny) == (lx, ly) or now - lt < 0.05:
+                return
+            self._last_mouse = (nx, ny, now)
         self.engine.menu_mouse(nx, ny, click)

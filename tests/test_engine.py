@@ -332,6 +332,28 @@ class MpvMouseTests(unittest.TestCase):
                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
         engine.menu_mouse.assert_called_once_with(0.5, 0.5, True)
 
+    def test_hover_moves_coalesce_to_the_latest_position(self):
+        from isoplay.mpv import MpvVideoWidget
+        QApplication.instance() or QApplication([])
+        engine = Mock()
+        engine.menu_active.return_value = True
+        engine.video_rect.return_value = (0.0, 0.0, 200.0, 100.0)
+        widget = MpvVideoWidget(engine, None)
+        widget.resize(200, 100)
+
+        def move(x, y):
+            widget.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(x, y),
+                                              Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+
+        move(50, 25)
+        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        move(50, 25)  # no movement: nothing to say
+        move(60, 30)  # still inside the coalescing window: held back
+        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(60, 30),
+                                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        engine.menu_mouse.assert_called_with(0.3, 0.3, True)  # clicks skip the window
+
     def test_video_rect_letterboxes_fit_and_covers_fill(self):
         from isoplay.mpv import MpvEngine as E
         engine, _ = _unbound(video_params={"dw": 853, "dh": 480, "w": 720, "h": 480})
