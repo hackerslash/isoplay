@@ -287,14 +287,18 @@ class MpvMouseTests(unittest.TestCase):
     def test_click_and_move_reach_discnav_normalized(self):
         engine, player = _unbound()
         MpvEngine.menu_mouse(engine, 0.5, 0.25, True)
-        self.assertEqual(player.commands[-1], ("discnav", "mouse-click", "0.5000", "0.2500"))
+        self.assertEqual(player.commands[-2], ("discnav", "mouse-move", "0.5000", "0.2500"))
+        # then activates exactly the way Enter does: mouse-click's own activation silently
+        # no-ops on discs where its lookup misses, while select is the proven path
+        self.assertEqual(player.commands[-1], ("discnav", "select"))
         MpvEngine.menu_mouse(engine, 0.5, 0.25, False)
         self.assertEqual(player.commands[-1], ("discnav", "mouse-move", "0.5000", "0.2500"))
 
     def test_positions_outside_the_window_land_on_an_edge(self):
         engine, player = _unbound()
         MpvEngine.menu_mouse(engine, 2.0, -1.0, True)
-        self.assertEqual(player.commands[-1], ("discnav", "mouse-click", "1.0000", "0.0000"))
+        self.assertEqual(player.commands[-2], ("discnav", "mouse-move", "1.0000", "0.0000"))
+        self.assertEqual(player.commands[-1], ("discnav", "select"))
 
     def test_widget_normalizes_pixels_and_ignores_non_menus(self):
         from isoplay.mpv import MpvVideoWidget

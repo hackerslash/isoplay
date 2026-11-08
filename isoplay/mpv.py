@@ -496,18 +496,23 @@ class MpvEngine:
 
     def menu_mouse(self, x, y, click):
         """Normalized 0..1 position in the render window (top-left 0,0), then let mpv map it
-        onto the disc itself; click activates the button under the cursor."""
+        onto the disc itself. A click first moves onto the button under the cursor, then
+        activates it exactly the way Enter does: mouse-click's own activation silently
+        no-ops on discs where its lookup misses (mpv reports success regardless), while
+        select on the hovered button is the path keyboard navigation proves every time."""
         x = max(0.0, min(1.0, float(x)))
         y = max(0.0, min(1.0, float(y)))
-        action = "mouse-click" if click else "mouse-move"
+        position = f"{x:.4f}", f"{y:.4f}"
         if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] discnav {action} {x:.4f} {y:.4f} "
+            print(f"[mpv-engine] discnav {'click' if click else 'move'} {position[0]} {position[1]} "
                   f"menu-active={self.menu_active()}", flush=True)
         try:
-            self.player.command("discnav", action, f"{x:.4f}", f"{y:.4f}")
+            self.player.command("discnav", "mouse-move", *position)
+            if click:
+                self.player.command("discnav", "select")
         except Exception as e:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
             if os.environ.get("ISOPLAY_DEBUG"):
-                print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
+                print(f"[mpv-engine] discnav click failed: {e!r}", flush=True)
 
 
 # --- the widget -----------------------------------------------------------------------------------------
