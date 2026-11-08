@@ -160,15 +160,26 @@ class MpvEngine:
             if name:
                 self._emit(name)
 
+        self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
+
+        def _stalled(name, value):
+            if value:
+                self._emit("buffer:0")  # waiting for data
+            elif self._cache_state is None:
+                self._emit("buffer:100")  # no demuxer cache (a local file): nothing to report
+
         def _cache(name, value):
-            self._emit(f"buffer:{100 if not value else 0}")  # mpv means "stalled on data" by it
+            self._cache_state = value if isinstance(value, (int, float)) else None
+            if self._cache_state is not None:
+                self._emit(f"buffer:{max(0, min(100, int(self._cache_state)))}")
 
         def _video(name, value):
             if value and not self._vout:
                 self._vout = True
                 self._emit("vout")
 
-        player.observe_property("paused-for-cache", _cache)
+        player.observe_property("paused-for-cache", _stalled)
+        player.observe_property("cache-buffering-state", _cache)
         player.observe_property("video-format", _video)
 
     def _emit(self, name):
