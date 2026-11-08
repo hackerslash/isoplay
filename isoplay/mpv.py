@@ -208,7 +208,7 @@ class MpvEngine:
 
     def has_media(self):
         try:
-            return bool(self.player["playlist-count"])
+            return bool(self.player.playlist_count)
         except Exception:  # noqa: BLE001 - unavailable before anything loaded
             return False
 
@@ -216,13 +216,13 @@ class MpvEngine:
 
     def playing(self):
         try:
-            return not self.player["core-idle"]
+            return not self.player.core_idle
         except Exception:  # noqa: BLE001
             return False
 
     def _seconds(self, name):
         try:
-            value = self.player[name]
+            value = getattr(self.player, name.replace("-", "_"))
         except Exception:  # noqa: BLE001 - nothing loaded, or a menu edition has no estimate
             return 0.0
         return value if value >= 0 else 0.0
@@ -235,13 +235,13 @@ class MpvEngine:
 
     def position(self):
         try:
-            return self.player["percent-pos"] / 100.0
+            return self.player.percent_pos / 100.0
         except Exception:  # noqa: BLE001
             return -1.0
 
     def menu_active(self):
         try:
-            return bool(self.player["disc-menu-active"])
+            return bool(self.player.disc_menu_active)
         except Exception:  # noqa: BLE001 - unset while nothing plays
             return False
 
@@ -261,13 +261,13 @@ class MpvEngine:
 
     def chapter_count(self):
         try:
-            return self.player["chapters"] or 0
+            return self.player.chapters or 0
         except Exception:  # noqa: BLE001
             return 0
 
     def chapter(self):
         try:
-            return max(0, self.player["chapter"])
+            return max(0, self.player.chapter)
         except Exception:  # noqa: BLE001
             return 0
 
@@ -281,13 +281,13 @@ class MpvEngine:
     # --- tracks -----------------------------------------------------------------------------------------
 
     def tracks(self):
-        items = self.player["track-list"]
+        items = self.player.track_list or ()
         return {"audio": track_entries(items, "audio", self._currently("aid")),
                 "sub": track_entries(items, "sub", self._currently("sid"))}
 
     def _currently(self, prop):
         try:
-            value = self.player[prop]
+            value = getattr(self.player, prop)
         except Exception:  # noqa: BLE001
             return -1
         if isinstance(value, str):  # "no" means Off, and there is no track id to hand back
@@ -308,7 +308,7 @@ class MpvEngine:
         stretch overrides the aspect to the window's (exact) shape."""
         params = {}
         try:
-            params = self.player["video-params"] or {}
+            params = self.player.video_params or {}
         except Exception:  # noqa: BLE001 - nothing is playing yet
             pass
         player = self.player
@@ -325,14 +325,20 @@ class MpvEngine:
     # --- disc menus ------------------------------------------------------------------------------------
 
     def navigate(self, action):
-        self.player.command("discnav", action)
+        try:
+            self.player.command("discnav", action)
+        except Exception:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
+            pass
 
     def menu_mouse(self, x, y, click):
         """Pixel position in the render window (the FBO the video is drawn into), then let mpv map
         it onto the disc itself; click activates the button under the cursor."""
         player = self.player
-        player.command("mouse", int(x), int(y))
-        player.command("discnav", "mouse-click" if click else "mouse-move")
+        try:
+            player.command("mouse", int(x), int(y))
+            player.command("discnav", "mouse-click" if click else "mouse-move")
+        except Exception:  # noqa: BLE001 - same: menus that take no mouse reject quietly
+            pass
 
 
 # --- the widget -----------------------------------------------------------------------------------------

@@ -1,8 +1,8 @@
 """Engine-layer behaviour that needs no libVLC instance and no libmpv.
 
 MpvEngine helpers import nothing from libmpv (the import only happens inside `binding()`, when
-an engine is actually asked for), and VlcEngine methods are called unbound on stubs, the same
-way test_player exercises the app.
+an engine is actually asked for), and both engines' property-reading methods are called unbound
+on stubs, the same way test_player exercises the app.
 """
 import os
 import unittest
@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import vlc  # noqa: E402
 
 from isoplay.engine import VlcEngine  # noqa: E402
-from isoplay.mpv import end_to_event, fit_zoom, track_entries, track_label  # noqa: E402
+from isoplay.mpv import MpvEngine, end_to_event, fit_zoom, track_entries, track_label  # noqa: E402
 
 
 class MpvEventTests(unittest.TestCase):
@@ -54,6 +54,83 @@ class MpvFitTests(unittest.TestCase):
         self.assertAlmostEqual(fit_zoom(1600, 900, 800, 900), 2.0)  # wide window, 1:1 material
         self.assertAlmostEqual(fit_zoom(1600, 900, 1600, 900), 1.0)  # same shape needs no zoom
         self.assertEqual(fit_zoom(0, 0, 1280, 720), 0.0)  # nothing is playing yet
+
+
+class _Player:
+    """Stand-in for a python-mpv MPV: properties by attribute name, options by subscript."""
+
+    def __init__(self, **props):
+        object.__setattr__(self, "_props", props)
+        object.__setattr__(self, "_set", {})
+
+    def __getattr__(self, name):
+        try:
+            return self._props[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __setattr__(self, name, value):
+        self._set[name] = value  # mpv treats writes of both kinds the same
+
+    def __setitem__(self, name, value):
+        self._set[name] = value
+
+
+def _unbound(**props):
+    engine = MpvEngine.__new__(MpvEngine)
+    engine.player = _Player(**props)
+    return engine, engine.player
+
+
+class MpvPropertiesTests(unittest.TestCase):
+    """python-mpv reads properties by attribute (core_idle -> core-idle), not by subscripts,
+    which reach options; the real spike run caught the engine reading the wrong layer."""
+
+    def test_state_comes_from_properties_with_dash_names(self):
+        engine, _ = _unbound(playlist_count=1, core_idle=False, percent_pos=42.0)
+        self.assertTrue(engine.has_media())
+        self.assertTrue(engine.playing())
+        self.assertAlmostEqual(engine.position(), 0.42)
+
+    def test_a_player_without_things_loaded_degrades_quietly(self):
+        engine, _ = _unbound(playlist_count=0, core_idle=True)  # no percent_pos at all
+        self.assertFalse(engine.has_media())
+        self.assertFalse(engine.playing())
+        self.assertEqual(engine.position(), -1.0)
+        self.assertEqual(engine.time(), 0)
+        self.assertEqual(engine.length(), 0)
+
+    def test_the_menu_flag_is_a_property(self):
+        self.assertTrue(_unbound(disc_menu_active=1)[0].menu_active())
+        self.assertFalse(_unbound()[0].menu_active())  # property not implemented yet: not a menu
+
+    def test_chapters_map_like_libvlc_chapters_did(self):
+        self.assertEqual(_unbound(chapters=4, chapter=2)[0].chapter_count(), 4)
+        self.assertEqual(_unbound(chapters=None, chapter=None)[0].chapter_count(), 0)
+        self.assertEqual(_unbound(chapter=-1)[0].chapter(), 0)  # before the first chapter
+
+    def test_each_fit_mode_touches_its_own_levers(self):
+        engine = _unbound(video_params={"w": 800, "h": 400})[0]
+        MpvEngine.set_fit(engine, "fill", 800, 400)  # same shape as the window: no zoom left
+        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "1.0"})
+        MpvEngine.set_fit(engine, "fit", 800, 400)  # mpv's own letterboxed fit, zero zoom
+        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "0"})
+        MpvEngine.set_fit(engine, "stretch", 800, 400)
+        self.assertEqual(engine.player._set, {"aspect": "800:400", "video-zoom": "0"})
+
+    def test_fill_without_a_picture_leaves_mpv_s_own_fit(self):
+        engine, _ = _unbound()  # nothing is playing, no video-params to zoom against
+        MpvEngine.set_fit(engine, "fill", 800, 400)
+        self.assertEqual(engine.player._set, {"aspect": "no", "video-zoom": "0.0"})
+
+    def test_tracks_read_off_the_property_list(self):
+        engine = _unbound(track_list=[{"type": "audio", "id": 1, "lang": "eng", "selected": True}],
+                          aid=1, sid="no")[0]
+        tracks = MpvEngine.tracks(engine)
+        self.assertEqual(tracks["audio"], ([(-1, "Off"), (1, "eng")], 1))
+        self.assertEqual(tracks["sub"][0], [(-1, "Off")])
+        MpvEngine.select_track(engine, "sub", -1)
+        self.assertEqual(engine.player._set, {"sid": "no"})
 
 
 class VlcMenuTests(unittest.TestCase):

@@ -39,8 +39,8 @@ def log(level, prefix, text):
 def observe(engine, note=""):
     player = engine.player
     try:
-        state = (f"core-idle={player['core-idle']} menu-active={engine.menu_active()} "
-                 f"edition={player['edition'] or '-'} title={player['media-title'] or '-'} "
+        state = (f"core-idle={player.core_idle} menu-active={engine.menu_active()} "
+                 f"edition={player.edition or '-'} title={player.media_title or '-'} "
                  f"pos={engine.position():.3f}")
     except Exception as e:  # noqa: BLE001 - property names shift between mpv versions
         state = f"properties unavailable ({e})"
