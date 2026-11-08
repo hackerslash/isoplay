@@ -102,8 +102,14 @@ class _Player:
 
 
 def _unbound(**props):
+    import queue as _queue
+    import threading as _threading
     engine = MpvEngine.__new__(MpvEngine)
     engine.player = _Player(**props)
+    engine._mouse_lock = _threading.Lock()  # hover queue, like __init__ but with no worker
+    engine._mouse_queue = _queue.Queue()
+    engine._mouse_gen = 0
+    engine._mouse_alive = True
     return engine, engine.player
 
 
@@ -310,7 +316,7 @@ class MpvMouseTests(unittest.TestCase):
         widget.resize(200, 100)
         widget.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(50, 25),
                                           Qt.NoButton, Qt.NoButton, Qt.NoModifier))
-        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        engine.menu_mouse_async.assert_called_once_with(0.25, 0.25)
         engine.menu_active.return_value = False  # normal playback: nothing to forward
         engine.menu_mouse.reset_mock()
         widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(10, 10),
@@ -346,13 +352,34 @@ class MpvMouseTests(unittest.TestCase):
                                               Qt.NoButton, Qt.NoButton, Qt.NoModifier))
 
         move(50, 25)
-        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        engine.menu_mouse_async.assert_called_once_with(0.25, 0.25)
         move(50, 25)  # no movement: nothing to say
         move(60, 30)  # still inside the coalescing window: held back
-        engine.menu_mouse.assert_called_once_with(0.25, 0.25, False)
+        engine.menu_mouse_async.assert_called_once_with(0.25, 0.25)
         widget.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(60, 30),
                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-        engine.menu_mouse.assert_called_with(0.3, 0.3, True)  # clicks skip the window
+        engine.menu_mouse.assert_called_with(0.3, 0.3, True)  # clicks stay synchronous
+
+    def test_the_worker_forwards_only_the_latest_hover(self):
+        import queue
+        import threading
+        import time
+        engine, player = _unbound()
+        engine._mouse_queue.put_nowait((0.1, 0.1, 0))
+        engine._mouse_queue.put_nowait((0.2, 0.2, 0))
+        engine._mouse_gen = 1  # a click landed since: both queued hovers are stale
+        engine._mouse_queue.put_nowait((0.5, 0.5, 1))
+        worker = threading.Thread(target=MpvEngine._mouse_drain, args=(engine,), daemon=True)
+        worker.start()
+        deadline = time.monotonic() + 5
+        while ("discnav", "mouse-move", "0.5000", "0.5000") not in player.commands:
+            assert time.monotonic() < deadline, "the worker never forwarded the hover"
+            time.sleep(0.02)
+        engine._mouse_alive = False
+        engine._mouse_queue.put_nowait(None)
+        worker.join(timeout=5)
+        moves = [c for c in player.commands if c[1] == "mouse-move"]
+        self.assertEqual(moves, [("discnav", "mouse-move", "0.5000", "0.5000")])
 
     def test_video_rect_letterboxes_fit_and_covers_fill(self):
         from isoplay.mpv import MpvEngine as E

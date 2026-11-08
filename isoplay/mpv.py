@@ -31,7 +31,9 @@ Open questions the spike (spike_mpv.py) has to settle with real discs are in doc
 import ctypes
 import ctypes.util
 import os
+import queue
 import re
+import threading
 import time
 
 from PySide6.QtCore import Qt, Signal
@@ -237,6 +239,15 @@ class MpvEngine:
         self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
         self._stalled = False     # paused-for-cache: mpv wants data and none is arriving
         self._seeking = False     # a seek is in flight: the picture is frozen by definition
+        # Hover positions queue here and a worker forwards only the latest: each discnav
+        # round trip can block behind stream reads, so sending every pixel from the Qt
+        # thread would queue stale positions behind the cursor and lag the highlight.
+        self._mouse_lock = threading.Lock()
+        self._mouse_queue: queue.Queue = queue.Queue()
+        self._mouse_gen = 0  # clicks invalidate queued hovers older than themselves
+        self._mouse_alive = True
+        self._mouse_worker = threading.Thread(target=self._mouse_drain, daemon=True)
+        self._mouse_worker.start()
         self._apply_network_options()
         self._observe()
         version = getattr(self.player, "mpv_version", "") or ""
@@ -323,10 +334,41 @@ class MpvEngine:
         pass  # the render context is created by the widget's initializeGL, once there is a GL context
 
     def shutdown(self):
+        try:  # tests (and the spike) inject stubs without the hover worker
+            self._mouse_alive = False
+            self._mouse_queue.put_nowait(None)
+        except AttributeError:
+            pass
         try:
             self.player.terminate()
         except Exception:  # noqa: BLE001 - a closing app shouldn't die on engine shutdown
             pass
+
+    def _mouse_drain(self):
+        """Forward hover positions, latest only, until shutdown. Runs off the Qt thread so
+        a move stuck behind a slow stream read never freezes the interface; anything
+        queued behind a newer hover, or behind a click, is dropped unsent."""
+        while True:
+            position = self._mouse_queue.get()
+            if position is None or not self._mouse_alive:
+                return
+            x, y, gen = position
+            while True:  # a newer hover already supersedes this one
+                try:
+                    position = self._mouse_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if position is None or not self._mouse_alive:
+                    return
+                x, y, gen = position
+            with self._mouse_lock:
+                current = self._mouse_gen
+            if gen != current:
+                continue  # a click landed since: its own move already went through
+            try:
+                self.player.command("discnav", "mouse-move", f"{x:.4f}", f"{y:.4f}")
+            except Exception:  # noqa: BLE001 - the menu went away mid-hover
+                pass
 
     # --- media ---------------------------------------------------------------------------------------
 
@@ -515,6 +557,16 @@ class MpvEngine:
             if os.environ.get("ISOPLAY_DEBUG"):
                 print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
 
+    def menu_mouse_async(self, x, y):
+        """Queue a hover position for the worker, which forwards only the latest. Never
+        blocks the calling (Qt) thread, however slow the stream underneath is."""
+        with self._mouse_lock:
+            gen = self._mouse_gen
+        try:  # unbounded: put_nowait cannot fail, but never block the Qt thread either way
+            self._mouse_queue.put_nowait((x, y, gen))
+        except Exception:  # noqa: BLE001
+            pass
+
     def menu_mouse(self, x, y, click):
         """Normalized 0..1 position in the render window (top-left 0,0), then let mpv map it
         onto the disc itself. A click first moves onto the button under the cursor, then
@@ -528,6 +580,9 @@ class MpvEngine:
             print(f"[mpv-engine] discnav {'click' if click else 'move'} {position[0]} {position[1]} "
                   f"menu-active={self.menu_active()}", flush=True)
         try:
+            if click:
+                with self._mouse_lock:  # queued hovers older than this are now stale
+                    self._mouse_gen += 1
             self.player.command("discnav", "mouse-move", *position)
             if click:
                 self.player.command("discnav", "select")
@@ -612,13 +667,15 @@ class MpvVideoWidget(QOpenGLWidget):
         if not 0.0 <= nx <= 1.0 or not 0.0 <= ny <= 1.0:
             return  # on the letterbox bars, not the picture: nothing to forward
         if not click:
-            # Tracking reports every pixel, and each report is a synchronous round trip
-            # into mpv that blocks this thread; forwarding all of them queues stale
-            # positions behind the cursor, which is what hover lag is. Coalesce to the
-            # latest position instead. Clicks always go through immediately.
+            # Tracking reports every pixel, and each report used to be a synchronous round
+            # trip into mpv that blocks this thread; at tracking rates stale positions
+            # queue behind the cursor, which is what hover lag is. Coalesce to the latest
+            # position here, and let the engine's worker forward that off this thread.
             now = time.monotonic()
             lx, ly, lt = self._last_mouse
             if (nx, ny) == (lx, ly) or now - lt < 0.05:
                 return
             self._last_mouse = (nx, ny, now)
-        self.engine.menu_mouse(nx, ny, click)
+            self.engine.menu_mouse_async(nx, ny)
+        else:  # clicks stay synchronous: the move and the select must keep their order
+            self.engine.menu_mouse(nx, ny, click)
