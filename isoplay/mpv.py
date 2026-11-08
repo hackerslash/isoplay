@@ -590,9 +590,17 @@ class MpvVideoWidget(QOpenGLWidget):
         active = self.engine.menu_active()
         if os.environ.get("ISOPLAY_DEBUG"):
             pos = event.position()
+            try:
+                params = self.engine.player.video_params or {}
+            except Exception:  # noqa: BLE001
+                params = {}
             print(f"[mpv-engine] qt {'click' if click else 'move'} "
                   f"{pos.x():.0f},{pos.y():.0f} of {self.width()}x{self.height()} "
-                  f"menu-active={active}", flush=True)
+                  f"menu-active={active} fit={getattr(self.engine, '_fit', '?')} "
+                  f"video={params.get('w')}x{params.get('h')} "
+                  f"display={params.get('dw')}x{params.get('dh')} "
+                  f"rect={self.engine.video_rect(max(1, self.width()), max(1, self.height()))}",
+                  flush=True)
         if not active:
             return  # normal playback: the disc has no menu to take the mouse
         w, h = max(1, self.width()), max(1, self.height())
