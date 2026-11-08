@@ -83,6 +83,13 @@ QMenu#optionsMenu::indicator {{ width: 0; height: 0; }}
 QMenu#optionsMenu::right-arrow {{ image: url({(BASE / "assets/chevron.svg").as_posix()}); width: 10px; height: 10px;
     margin-right: 10px; }}
 QMenu#optionsMenu::separator {{ height: 1px; background: rgba(255,255,255,0.08); margin: 5px 8px; }}
+QMenu#cacheMenu {{ background: #242426; color: {INK}; border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px; padding: 6px; }}
+QMenu#cacheMenu::item {{ color: {INK}; padding: 8px 18px 8px 34px; border-radius: 6px; font-size: 13px; }}
+QMenu#cacheMenu::item:selected {{ background: rgba(255,255,255,0.08); }}
+QMenu#cacheMenu::indicator {{ width: 14px; height: 14px; left: 12px; }}
+QMenu#cacheMenu::indicator:checked {{ image: url({(BASE / "assets/check.svg").as_posix()}); }}
+QMenu#cacheMenu::separator {{ height: 1px; background: rgba(255,255,255,0.08); margin: 5px 8px; }}
 QPushButton#preferenceRow {{ background: transparent; border: none; border-radius: 6px; padding: 0; }}
 QPushButton#preferenceRow:hover, QPushButton#preferenceRow:focus {{ background: rgba(255,255,255,0.06); }}
 QLabel#preferenceLabel {{ color: {INK}; font-size: 13px; background: transparent; }}

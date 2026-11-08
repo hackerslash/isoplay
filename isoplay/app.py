@@ -23,7 +23,7 @@ from isoplay import __version__  # noqa: E402
 from isoplay.media import UA, display_name, fmt, is_url, normalize, prepare  # noqa: E402
 from isoplay.diskcache import GB, DiskCache  # noqa: E402
 from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
-from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, svg_icon, tabular  # noqa: E402
+from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, OPTIONS_CSS, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
 from isoplay.widgets import (  # noqa: E402
     DiscChooser, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
@@ -190,7 +190,8 @@ class Player(QMainWindow):
 
     def build_cache_menu(self):
         """How much disk keeps what discs were opened with, so they reopen without the round trips."""
-        menu = QMenu("Disk Cache", self)
+        menu = QMenu("Disk Cache", self, objectName="cacheMenu")
+        menu.setStyleSheet(OPTIONS_CSS)  # opened from the Options menu, so dressed like it
         sizes = QActionGroup(menu)
         chosen = self.settings.value("cache/gb", 2, type=int)
         for gb in CACHE_GB:
