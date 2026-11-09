@@ -145,6 +145,12 @@ class ShareTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "offline"):
                 media.prepare(url)
 
+    def test_a_slow_open_names_its_stages(self):
+        stages = []
+        _, _, proxy, _, _ = media.prepare(self.open(), progress=stages.append)
+        self.addCleanup(proxy.close)
+        self.assertEqual(stages, ["Listing the share", "Reading the disc"])
+
     def test_a_share_without_a_disc_plays_its_largest_media_file(self):
         url = self.open({"clips/small.mkv": b"a" * 16, "clips/big.mkv": b"b" * 64, "clips/notes.txt": b"x"})
         mrl, kind, proxy, _, _ = media.prepare(url)
@@ -194,9 +200,10 @@ class ShareTests(unittest.TestCase):
         mib = 1 << 20
         blocks = media.Blocks("http://host/f", size=1 << 30, upstream=Upstream(), bs=mib, streams=64)
         self.addCleanup(blocks.close)
+        run = blocks.run  # _tune_run may relearn it once fetches arrive; the queue was sized with this
         blocks.prefetch(500 * mib)  # a glance at one spot
         held = lambda: set(blocks.pending) | {i for _, i in blocks.memory.items}  # noqa: E731
-        self.assertLessEqual(max(held()), 500 + 1 + blocks.run)
+        self.assertLessEqual(max(held()), 500 + 1 + run)
         for i in range(64):  # playback reading straight through
             blocks.prefetch(i * mib)
             blocks.read(i * mib, mib)
@@ -301,7 +308,7 @@ class ShareTests(unittest.TestCase):
         self.addCleanup(upstream.close)
         with upstream.get(0, 3) as r:
             self.assertEqual(r.read(), b"data")
-        self.assertEqual(upstream.throttles, 2)
+        self.assertEqual(upstream.throttles, 1)  # the 503; a 502 is retried but not a throttle
 
     def test_a_dead_host_stays_an_error(self):
         class Gone(BaseHTTPRequestHandler):
@@ -312,6 +319,7 @@ class ShareTests(unittest.TestCase):
 
             def do_GET(self):
                 self.send_response(500)
+                self.send_header("Retry-After", "0")
                 self.send_header("Content-Length", "5")
                 self.end_headers()
                 self.wfile.write(b"oops!")

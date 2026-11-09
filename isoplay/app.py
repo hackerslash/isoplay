@@ -55,6 +55,7 @@ LANG_CHOICES = (("Disc Default", ""), ("English", "en,eng"), ("Spanish", "es,spa
 
 class Bridge(QObject):
     prepared = Signal(int, object)
+    progress = Signal(int, str)
     event = Signal(str)
 
 
@@ -87,6 +88,7 @@ class Player(QMainWindow):
 
         self.bridge = Bridge()
         self.bridge.prepared.connect(self.start)
+        self.bridge.progress.connect(self.show_progress)
         self.bridge.event.connect(self.on_event)
         self.engine.set_bridge(self.bridge.event.emit)
 
@@ -614,12 +616,17 @@ class Player(QMainWindow):
 
         def work():
             try:
-                result = prepare(src, disc_root=disc_root)
+                result = prepare(src, disc_root=disc_root,
+                                 progress=lambda stage: self.bridge.progress.emit(token, stage))
             except Exception as e:  # noqa: BLE001 - shown to the user
                 result = e
             self.bridge.prepared.emit(token, result)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def show_progress(self, token, stage):
+        if token == self.token:  # a newer play() owns the screen now
+            self.flash(stage, sticky=True, busy=True)
 
     def start(self, token, result):
         if token != self.token:  # a newer play() superseded this one

@@ -5,11 +5,10 @@ import time
 import unittest
 from unittest import mock
 from unittest.mock import Mock, call
-from email.message import Message
-from urllib.error import HTTPError
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from isoplay.app import Player
+from isoplay import media
 from isoplay.media import prepare
 
 
@@ -221,12 +220,6 @@ class StallTests(unittest.TestCase):
         self.assertGreater(player.deadline, time.monotonic() + 30)
 
 
-def refusal(code, reason, content_type="application/octet-stream"):
-    headers = Message()
-    headers["Content-Type"] = content_type
-    return HTTPError("https://host/x", code, reason, headers, None)
-
-
 class EndedTests(unittest.TestCase):
     def test_a_file_that_ends_without_a_frame_is_a_failure_not_a_finish(self):
         player = waiting(deadline=time.monotonic() + 30, disc=None)
@@ -257,33 +250,34 @@ class EndedTests(unittest.TestCase):
 
 
 class LinkTests(unittest.TestCase):
+    def answer(self, status, content_type="application/octet-stream", body=b""):
+        return media._Body(status, {"Content-Type": content_type}, body)
+
     def test_archives_are_refused_before_anything_opens(self):
         with self.assertRaises(OSError) as caught:
             prepare("https://host/movie.rar")
         self.assertIn("can't open .rar", str(caught.exception))
 
     def test_a_dead_link_raises_instead_of_reaching_the_player(self):
-        with mock.patch("isoplay.media.urlopen", side_effect=refusal(404, "Not Found")):
+        with mock.patch("isoplay.media._fetch", return_value=self.answer(404)):
             with self.assertRaises(OSError) as caught:
                 prepare("https://host/x.mkv")
         self.assertIn("no longer available", str(caught.exception))
 
     def test_a_web_page_is_not_mistaken_for_a_video(self):
-        page = mock.MagicMock(status=200)
-        page.headers.get_content_type.return_value = "text/html"
-        page.__enter__.return_value = page
-        with mock.patch("isoplay.media.urlopen", return_value=page):
+        with mock.patch("isoplay.media._fetch",
+                        return_value=self.answer(200, "text/html", b"<html><body>watch</body></html>")):
             with self.assertRaises(OSError) as caught:
                 prepare("https://host/watch?v=1")
         self.assertIn("web page", str(caught.exception))
 
     def test_a_range_the_server_dislikes_is_not_treated_as_a_dead_link(self):
-        with mock.patch("isoplay.media.urlopen", side_effect=refusal(416, "Range Not Satisfiable")):
+        with mock.patch("isoplay.media._fetch", return_value=self.answer(416)):
             self.assertEqual(prepare("https://host/clip.mkv"),
                              ("https://host/clip.mkv", None, None, (), None))
 
     def test_a_web_page_behind_a_range_refusal_is_still_caught(self):
-        with mock.patch("isoplay.media.urlopen", side_effect=refusal(416, "Range", "text/html")):
+        with mock.patch("isoplay.media._fetch", return_value=self.answer(416, "text/html")):
             with self.assertRaises(OSError) as caught:
                 prepare("https://host/clip.mkv")
         self.assertIn("web page", str(caught.exception))
@@ -415,6 +409,14 @@ class MouseTests(unittest.TestCase):
         player.engine.has_media.return_value = True
         Player.on_video_clicked(player)
         player.click_timer.start.assert_not_called()
+
+    def test_a_slow_open_replaces_the_spinner_text_until_superseded(self):
+        player = Mock(token=3)
+        Player.show_progress(player, 3, "Listing the share")
+        player.flash.assert_called_once_with("Listing the share", sticky=True, busy=True)
+        player.flash.reset_mock()
+        Player.show_progress(player, 2, "Reading the disc")  # a newer play() owns the screen
+        player.flash.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -2,3 +2,5 @@ PySide6==6.12.0
 python-mpv==1.0.8
 certifi==2026.10.23
 pycdlib==1.22.0
+urllib3==2.8.0
+urllib3==2.8

@@ -1,21 +1,26 @@
 """Locating, probing and streaming the thing the user asked to play. No Qt here."""
 import base64
+import datetime
 import http.client
 import io
 import itertools
 import os
+import random
 import re
 import socket
 import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import urllib3
+import urllib3.connection
 
 from isoplay import runtime  # noqa: F401 - sets SSL_CERT_FILE before any request
 from isoplay import webdav
@@ -61,7 +66,8 @@ BLOCK = 512 << 10
 SERVE_CAP = 16 << 20  # most to answer one range with; players ask for the whole rest
 SNIFF_DISC = 4 << 20  # how far in to look for BDMV/VIDEO_TS, independent of the block size
 REDIRECTS = {301, 302, 303, 307, 308}
-TRANSIENT = {429, 502, 503, 504}  # throttled, or a host failing over mid-play; worth another try
+RETRY_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+BACKOFF = 0.5
 
 
 class _Body(io.BytesIO):
@@ -70,107 +76,282 @@ class _Body(io.BytesIO):
         self.status, self.headers = status, headers
 
 
-class Upstream:
-    """Keep-alive connections to a remote disc image, one per reader thread.
+class _Retry(OSError):
+    def __init__(self, message, after=None):
+        super().__init__(message)
+        self.after = after
 
-    A disc generates thousands of range requests, and a fresh TLS handshake for
-    each one costs more than the transfer.
-    """
+
+_SHARED_POOLS, _SHARED_LOCK = {}, threading.Lock()
+
+
+def _manager(url, timeout, shared=False):
+    parts = urllib.parse.urlsplit(url)
+    proxy = urllib.request.getproxies().get(parts.scheme)
+    if proxy and urllib.request.proxy_bypass(parts.hostname):
+        proxy = None
+    ca_certs = os.environ.get("SSL_CERT_FILE")
+    key = (parts.scheme, proxy, timeout, ca_certs)
+    if shared:
+        with _SHARED_LOCK:
+            if key in _SHARED_POOLS:
+                return _SHARED_POOLS[key]
+    options = dict(maxsize=32, block=False, retries=False,
+                   timeout=urllib3.Timeout(connect=15, read=timeout),
+                   socket_options=urllib3.connection.HTTPConnection.default_socket_options
+                   + [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)],
+                   headers={"User-Agent": UA, "Accept-Encoding": "identity"})
+    if ca_certs:
+        options["ca_certs"] = ca_certs
+    manager = urllib3.ProxyManager(proxy, **options) if proxy else urllib3.PoolManager(**options)
+    if shared:
+        with _SHARED_LOCK:
+            manager = _SHARED_POOLS.setdefault(key, manager)
+    return manager
+
+
+def _same_origin(url, origin):
+    a, b = urllib.parse.urlsplit(url), urllib.parse.urlsplit(origin)
+    ports = {"http": 80, "https": 443}
+    return ((a.scheme.lower(), (a.hostname or "").lower(), a.port or ports.get(a.scheme.lower()))
+            == (b.scheme.lower(), (b.hostname or "").lower(), b.port or ports.get(b.scheme.lower())))
+
+
+def _retry_after(headers):
+    value = headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return min(30, max(0, int(value)))
+    except ValueError:
+        pass
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=datetime.timezone.utc)
+        return min(30, max(0, date.timestamp() - time.time()))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _sleep(attempt, after=None):
+    if after is not None:
+        if after:
+            time.sleep(after)
+        return
+    delay = min(10, BACKOFF * 2 ** attempt)
+    delay *= 1 + random.random() * 0.25
+    if delay:
+        time.sleep(delay)
+
+
+def _discard(response):
+    try:
+        response.close()
+    except (OSError, http.client.HTTPException, urllib3.exceptions.HTTPError):
+        pass
+
+
+def _fetch(url, method, timeout, headers, body=None, limit=None):
+    """Small requests share pools; unlike Upstream they do not remember redirects."""
+    origin, current = url, url
+    attempt = hops = 0
+    while attempt < 4:
+        sent = {"User-Agent": UA, "Accept-Encoding": "identity", **headers}
+        if _same_origin(current, origin):
+            sent.update(credentials(origin))
+        response, release = None, False
+        try:
+            response = _manager(current, timeout, True).request(method, bare(current), body=body, headers=sent,
+                                                               preload_content=False, retries=False, redirect=False)
+            location = response.headers.get("Location")
+            if response.status in REDIRECTS and location and hops < 5:
+                current = urllib.parse.urljoin(current, location)
+                hops += 1
+                continue
+            hops = 0
+            if (response.status == 429 or response.status >= 500) and attempt < 3:
+                after = _retry_after(response.headers)
+                trace(f"{method} attempt {attempt + 1} failed: {response.status} {response.reason}")
+                _discard(response)
+                response = None
+                _sleep(attempt, after)
+                attempt += 1
+                continue
+            if response.status >= 300:
+                return _Body(response.status, response.headers, b"")
+            data = response.read() if limit is None else response.read(limit)
+            release = limit is None
+            return _Body(response.status, response.headers, data)
+        except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError) as e:
+            if response is not None:
+                _discard(response)
+                response = None
+            if attempt == 3:
+                raise
+            trace(f"{method} attempt {attempt + 1} failed: {e!r}")
+            _sleep(attempt)
+            attempt += 1
+        finally:
+            if response is not None:
+                if release:
+                    response.release_conn()
+                else:
+                    _discard(response)
+
+
+class Upstream:
+    """Keep-alive connections to a remote disc image, shared across a WebDAV share."""
 
     def __init__(self, url, timeout=30, share=None):
         if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
             raise OSError("only http and https disc images can be streamed")
-        self.url, self.timeout = url, timeout
-        # Files on one share reuse each other's connections: one per thread per file ran to hundreds.
-        self.local, self.lock, self.connections = ((share.local, share.lock, share.connections) if share
-                                                   else (threading.local(), threading.Lock(), []))
+        self.origin, self.url, self.timeout = url, url, timeout
+        self.pool, self.own_pool = (share.pool, False) if share else (_manager(url, timeout), True)
+        self.lock, self.responses = threading.Lock(), set()
         self.throttles, self.closed = 0, False
+        self.validator, self._validator_set = None, False
+        self._redirected = False
 
-    def _connection(self):
-        url = self.url
-        parts = urllib.parse.urlsplit(url)
-        held = getattr(self.local, "held", None)
-        if held and held[0] == parts[:2]:
-            return held[1], url
-        self._drop()
-        factory = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-        connection = factory(parts.hostname, parts.port, timeout=self.timeout)  # netloc may carry user:pass
-        self.local.held = (parts[:2], connection)
+    def _track(self, response):
         with self.lock:
-            self.connections.append(connection)
-        return connection, url
+            if self.closed:
+                raise OSError("the stream was closed")
+            self.responses.add(response)
 
-    def _drop(self):
-        held = getattr(self.local, "held", None)
-        if not held:
-            return
-        self.local.held = None
+    def _finish(self, response, release=False):
         with self.lock:
-            if held[1] in self.connections:
-                self.connections.remove(held[1])
-        held[1].close()
+            self.responses.discard(response)
+        if release:
+            try:
+                response.release_conn()
+            except (OSError, http.client.HTTPException, urllib3.exceptions.HTTPError):
+                pass
+        else:
+            _discard(response)
+
+    def _check_validator(self, headers):
+        etag = (headers.get("ETag") or "").strip()
+        validator = etag if etag and etag[:2].upper() != "W/" else (headers.get("Last-Modified") or None)
+        with self.lock:
+            if not self._validator_set:
+                self.validator, self._validator_set = validator, True
+            elif self.validator and validator and validator != self.validator:
+                raise OSError("The file changed on the server while it was playing")
 
     def get(self, start, end):
         """One byte range, read in full so the connection is ready for the next block."""
-        for attempt in range(4):
+        data = bytearray()
+        attempt = hops = 0
+        refreshed = False
+        while attempt < 6:
             if self.closed:  # read-ahead still queued when playback stopped; don't keep retrying it
                 raise OSError("the stream was closed")
-            connection, url = self._connection()
-            parts = urllib.parse.urlsplit(url)
+            range_start = start + len(data)
+            url, redirected = self.url, self._redirected
+            headers = {"Range": f"bytes={range_start}-{end}", "User-Agent": UA, "Accept-Encoding": "identity"}
+            if _same_origin(url, self.origin):
+                headers.update(credentials(self.origin))
+            if self.validator:
+                headers["If-Range"] = self.validator
+            response, release = None, False
             try:
-                connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, "")),
-                                   headers={"Range": f"bytes={start}-{end}", "User-Agent": UA,
-                                            "Accept-Encoding": "identity", **credentials(url)})
-                response = connection.getresponse()
-                # Bounded: a server that ignores Range answers with the whole file, and some
-                # of those files are tens of gigabytes.
-                data = response.read(end - start + 1)
-            except Exception as e:
-                if self.closed:  # close() pulled the socket from under this read; http.client trips over it
-                    raise OSError("the stream was closed") from None
-                if not isinstance(e, (http.client.HTTPException, OSError)):
-                    raise
-                trace(f"upstream {start}-{end} attempt {attempt + 1} failed: {e!r}")
-                self._drop()
-                if attempt == 3:
-                    raise
-                time.sleep(2 ** attempt)  # a flapping host is usually back in a second or two
-                continue
-            if response.status == 200:
-                self._drop()  # the rest of the body is still pending, so the connection is spent
-                if start:  # these bytes are the head of the file, not the range we asked for
+                try:
+                    response = self.pool.request("GET", bare(url), headers=headers, preload_content=False,
+                                                 retries=False, redirect=False)
+                except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError) as e:
+                    if self.closed:
+                        raise OSError("the stream was closed") from None
+                    raise _Retry(repr(e)) from e
+                self._track(response)
+                location = response.headers.get("Location")
+                if response.status in REDIRECTS and location:
+                    if hops == 5:
+                        raise OSError("the server kept redirecting the disc image")
+                    self.url = urllib.parse.urljoin(url, location)
+                    self._redirected = True
+                    hops += 1
+                    continue
+                hops = 0
+                if response.status in (401, 403, 404, 410) and redirected and not refreshed:
+                    self.url, self._redirected, refreshed = self.origin, False, True
+                    continue
+                if response.status in (429, 503):
+                    with self.lock:
+                        self.throttles += 1
+                if response.status in RETRY_STATUSES:
+                    raise _Retry(f"the server answered {response.status} {response.reason}",
+                                 _retry_after(response.headers))
+                if response.status >= 400:
+                    raise OSError(f"the server answered {response.status} {response.reason}")
+                if response.status in (200, 206):
+                    self._check_validator(response.headers)
+                if response.status == 200 and range_start:
+                    if "If-Range" in headers:
+                        raise OSError("The file changed on the server while it was playing")
                     raise OSError("That server ignores Range requests, so it can't be streamed")
-            if response.status in REDIRECTS and response.getheader("Location"):
-                self.url = urllib.parse.urljoin(url, response.getheader("Location"))
-                self._drop()
-                continue
-            if response.will_close:
-                self._drop()
-            if response.status in TRANSIENT and attempt < 3:
-                # The error page may still be pending, so this connection is spent.
-                self._drop()
-                self.throttles += 1
-                trace(f"upstream {start}-{end} answered {response.status}, retrying")
-                wait = response.getheader("Retry-After", "")
-                time.sleep(min(int(wait), 10) if wait.isdigit() else 2 ** attempt)
-                continue
-            if response.status >= 400:  # urlopen raised these; http.client hands back the error page
-                self._drop()
-                raise OSError(f"the server answered {response.status} {response.reason}")
-            return _Body(response.status, response.headers, data)
-        raise OSError("the server kept redirecting the disc image")
+                if response.status == 206:
+                    found = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)",
+                                         (response.headers.get("Content-Range") or "").strip())
+                    if (not found or int(found[1]) != range_start or int(found[2]) < int(found[1])
+                            or int(found[2]) > end):
+                        raise _Retry(f"bad Content-Range: {response.headers.get('Content-Range')!r}")
+                wanted = end - start + 1
+                while len(data) < wanted:
+                    try:
+                        chunk = response.read(wanted - len(data))
+                    except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError) as e:
+                        # read() raises before returning the bytes already read; the response
+                        # still holds them, so salvage what arrived and resume from there.
+                        got = b""
+                        while True:
+                            try:
+                                more = response.read(1)
+                                got += more
+                                if not more:
+                                    break
+                            except Exception:  # noqa: BLE001 - the connection is spent either way
+                                break
+                        data.extend(got)
+                        if self.closed:
+                            raise OSError("the stream was closed") from None
+                        raise _Retry(repr(e)) from e
+                    if self.closed:
+                        raise OSError("the stream was closed")
+                    if not chunk:
+                        if response.status == 200:
+                            break
+                        raise _Retry(f"short body after {len(data)} bytes")
+                    data.extend(chunk)
+                release = response.status == 206
+                return _Body(response.status, response.headers, bytes(data))
+            except _Retry as e:
+                if response is not None:
+                    self._finish(response)
+                    response = None
+                if self.closed:
+                    raise OSError("the stream was closed") from None
+                if attempt == 5:
+                    raise OSError(str(e)) from None
+                trace(f"upstream {start}-{end} attempt {attempt + 1} failed: {e}")
+                _sleep(attempt, e.after)
+                attempt += 1
+                hops = 0
+            finally:
+                if response is not None:
+                    self._finish(response, release)
 
     def close(self):
-        self.closed = True
         with self.lock:
-            connections, self.connections = self.connections, []
-        for connection in connections:
-            if connection.sock:  # close() alone doesn't wake a read blocked on it; quitting waited 30 s
-                try:
-                    connection.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            connection.close()
+            self.closed = True
+            responses = list(self.responses)
+        for response in responses:
+            try:
+                response.shutdown()
+            except (OSError, http.client.HTTPException, urllib3.exceptions.HTTPError):
+                pass
+        if self.own_pool:
+            self.pool.clear()
 
 
 class Served:
@@ -265,7 +446,8 @@ class Blocks:
         self.background = background  # where read-ahead queues, if not behind readers in `pool`
         self.pool, self.own_pool = (pool, False) if pool else (ThreadPoolExecutor(streams + 2), True)
         self.size = self._size() if size is None else size  # a share already knows it
-        self.disk_key = DiskCache.key(bare(url), self.size, self.bs)
+        validator = getattr(self.upstream, "validator", None)
+        self.disk_key = DiskCache.key(bare(url) + (f"|{validator}" if validator else ""), self.size, self.bs)
 
     def _streams(self):
         return int(self.limit)
@@ -672,22 +854,20 @@ def _refresh_listing(url, key):
 
 def propfind(url):
     """One level of a WebDAV collection, as a Multi-Status body."""
-    req = Request(bare(url), method="PROPFIND", data=webdav.PROPS,
-                  headers={"Depth": "1", "Content-Type": "text/xml; charset=utf-8",
-                           "User-Agent": UA, **credentials(url)})
     try:
-        with urlopen(req, timeout=30) as r:
-            return r.read()
-    except HTTPError as e:
-        if e.code in (401, 403):
-            if urllib.parse.urlsplit(url).username:
-                raise NeedsCredentials("That share rejected the user name and password in the link") from None
-            raise NeedsCredentials("That share needs a user name and password in the link") from None
-        if e.code in (405, 501):
-            raise OSError("That link isn't a WebDAV share") from None
-        raise OSError(f"That share answered {e.code}") from None
-    except URLError:
+        r = _fetch(url, "PROPFIND", 30, {"Depth": "1", "Content-Type": "text/xml; charset=utf-8"},
+                   body=webdav.PROPS)
+    except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError):
         raise OSError("Couldn't reach that share") from None
+    if r.status in (401, 403):
+        if urllib.parse.urlsplit(url).username:
+            raise NeedsCredentials("That share rejected the user name and password in the link")
+        raise NeedsCredentials("That share needs a user name and password in the link")
+    if r.status in (405, 501):
+        raise OSError("That link isn't a WebDAV share")
+    if r.status >= 300:
+        raise OSError(f"That share answered {r.status}")
+    return r.read()
 
 
 VIDEO_EXT = MEDIA_EXT | {".m3u8", ".mpd"}
@@ -728,25 +908,26 @@ def _not_a_page(headers, head=b""):
 def probe(url):
     """One ranged read: ("disc" | "zip" | None, size), sniffed because download links rarely have an
     extension. size is the total a ranged answer reports, so streaming needn't ask again; None if not."""
-    req = Request(bare(url), headers={"Range": f"bytes=0-{SNIFF - 1}", "User-Agent": UA,
-                                      **credentials(url)})
     try:
-        with urlopen(req, timeout=20) as r:
-            if r.status not in (200, 206):
-                return None, None
-            head = r.read(SNIFF)
-            _not_a_page(r.headers, head)
-            total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
-            size = int(total) if r.status == 206 and total.isdigit() else None
-    except HTTPError as e:
-        if e.code in DEAD or e.code >= 500:
-            raise OSError("That link is no longer available") from None
-        _not_a_page(e.headers)  # a 416 on a web page still means the link is not a video
-        return None, None  # the server dislikes the probe, not the link; let the player try
-    except URLError:
-        raise OSError("Couldn't reach that server") from None
-    except TimeoutError:
+        r = _fetch(url, "GET", 20, {"Range": f"bytes=0-{SNIFF - 1}"}, limit=SNIFF)
+    except (urllib3.exceptions.TimeoutError, TimeoutError):
         raise OSError("That server didn't respond") from None
+    except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError):
+        raise OSError("Couldn't reach that server") from None
+    headers = http.client.HTTPMessage()
+    for name, value in r.headers.items():
+        headers[name] = value
+    if r.status in DEAD or r.status >= 500:
+        raise OSError("That link is no longer available")
+    if r.status >= 300:
+        _not_a_page(headers)  # a 416 on a web page still means the link is not a video
+        return None, None  # the server dislikes the probe, not the link; let the player try
+    if r.status not in (200, 206):
+        return None, None
+    head = r.read()
+    _not_a_page(headers, head)
+    total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
+    size = int(total) if r.status == 206 and total.isdigit() else None
     if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
         return "zip", size
     for magic, name in ((b"Rar!", ".rar"), (b"7z\xbc\xaf", ".7z"), (b"\xfd7zXZ", ".xz")):
@@ -795,11 +976,15 @@ def _streamed(proxy, kind):
     return proxy.mrl, kind, proxy, view.discs if view else (), view.disc_root if view else None
 
 
-def _share(url, disc_root):
+def _share(url, disc_root, progress=None):
     """A WebDAV collection: list it, project the disc on it, serve that."""
+    if progress:
+        progress("Listing the share")
     files = _listing(url)
     if not files:
         raise OSError("That share is empty")
+    if progress:
+        progress("Reading the disc")
     image = Share(files)
     try:
         image.view = project_remote(image.streams, root=disc_root)
@@ -816,8 +1001,10 @@ def _share(url, disc_root):
     return _streamed(image, image.view.kind)
 
 
-def _project(image, project):
+def _project(image, project, progress=None):
     """Serve image through project, or close it and give up so the caller can fall back."""
+    if progress:
+        progress("Reading the disc")
     try:
         image.view = project(image)
     except Exception:
@@ -829,8 +1016,12 @@ def _project(image, project):
     return _streamed(image, image.view.kind)
 
 
-def prepare(src, disc_root=None):
-    """How mpv should open src: (mrl, kind, Served | None, disc roots, chosen root). Blocks on I/O."""
+def prepare(src, disc_root=None, progress=None):
+    """How mpv should open src: (mrl, kind, Served | None, disc roots, chosen root). Blocks on I/O.
+
+    progress, if given, hears where a slow open is: "Checking the link", "Listing the share",
+    "Reading the disc". It is called from the caller's thread.
+    """
     ext = suffix(src)
     if ext in ARCHIVE_EXT:
         raise OSError(f"isoplay can't open {ext} archives")
@@ -845,7 +1036,8 @@ def prepare(src, disc_root=None):
         with open(p, "rb") as f:
             data = f.read(SNIFF_DISC)
         if data[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
-            return _project(LocalImage(p), lambda image: project_zip(image, root=disc_root))
+            return _project(LocalImage(p), lambda image: project_zip(image, root=disc_root),
+                            progress=progress)
         if not iso_signature(data):
             return (src, *PLAIN)
         kind = disc_kind(data)
@@ -856,23 +1048,27 @@ def prepare(src, disc_root=None):
         elif kind is None:  # HD DVD, VCD, DVD-Audio, a rip of loose files
             project = project_media
         if project:
-            lifted = _project(LocalImage(p), project)
+            lifted = _project(LocalImage(p), project, progress=progress)
             if lifted:
                 return lifted
         return src, kind, None, (), None
     if src.endswith("/"):  # a collection, not a file: only a share walk can make sense of it
-        return _share(src, disc_root)
+        return _share(src, disc_root, progress=progress)
+    if progress:
+        progress("Checking the link")
     try:
         found, size = probe(src)
     except WebPage as page:
         try:  # a share's own index page looks like one, so give it a listing before giving up
-            return _share(src, disc_root)
+            return _share(src, disc_root, progress=progress)
         except NeedsCredentials:
             raise
         except OSError:
             raise page from None
     if not found:
         return (src, *PLAIN)
+    if progress:
+        progress("Reading the disc")
     proxy = RangeCache(src, size=size)
     try:
         if found == "zip":
