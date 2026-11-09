@@ -322,7 +322,7 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(calls, [(player.current, {"menus": False, "disc_root": "/BONUS"})])
 
     def test_disc_menu_action_switches_to_bonus(self):
-        app = QApplication.instance() or QApplication([])
+        _app = QApplication.instance() or QApplication([])
         menu = QMenu()
         calls = []
         player = SimpleNamespace(

@@ -1,1 +1,2 @@
 tools/*.patch -text
+*.iso binary

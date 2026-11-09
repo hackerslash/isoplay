@@ -1,0 +1,6 @@
+line-length = 145
+extend-exclude = ["build", "dist"]
+
+[lint]
+select = ["E", "F", "W", "B"]
+ignore = ["B905"]  # zip over equal-length lists is the norm here

@@ -15,6 +15,12 @@ permissions:
   contents: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run ruff==0.17.4 check .
+
   build:
     strategy:
       fail-fast: false
@@ -69,7 +75,7 @@ jobs:
       - run: python -m tests.test_isoplay
         if: runner.os == 'Linux'
       - run: python build.py
-      - run: python -m unittest -v tests.test_welcome tests.test_player tests.test_engine
+      - run: python -m unittest -v tests.test_welcome tests.test_player tests.test_engine tests.test_playback tests.test_diskcache
       - run: python -m tests.test_update_bundle
       - uses: actions/upload-artifact@v4
         with:
