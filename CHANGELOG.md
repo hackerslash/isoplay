@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - **libmpv replaces libVLC.** Disc menus take the mouse on every platform, video is drawn into
   the window by mpv's render API, and disc images stream to a patched libmpv
