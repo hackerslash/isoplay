@@ -229,6 +229,8 @@ class MpvEngine:
             )
             if os.environ.get("ISOPLAY_DEBUG"):
                 options["loglevel"] = "info"  # libmpv's own story of the disc, line by line
+                if os.environ.get("ISOPLAY_DEBUG") == "verbose":
+                    options["loglevel"] = "verbose"  # libbluray's BD-J chatter too
                 options["log_handler"] = lambda level, prefix, text: print(
                     f"[mpv {level} {prefix}] {text.strip()}", flush=True)
             self.player = self.mpv.MPV(**options)
