@@ -46,13 +46,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config ant libxcb-cursor0 \
             libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
-            libavdevice-dev libass-dev libdvdnav-dev libbluray-dev libgl-dev libegl-dev libcurl4-openssl-dev
+            libavdevice-dev libass-dev libbluray-dev libgl-dev libegl-dev libcurl4-openssl-dev
           # mpv 0.42 needs libplacebo >= 7.387; Ubuntu 24.04 ships 6.338
           git clone --depth 1 --branch v7.387.0 --recurse-submodules https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
           meson setup /tmp/libplacebo/build /tmp/libplacebo --buildtype=release --prefix=/usr/local \
             -Dvulkan=disabled -Ddemos=false -Dtests=false
           sudo "$(which ninja)" -C /tmp/libplacebo/build install
-          sudo ldconfig
+          # Ubuntu's libdvdread 6.1 ignores stream callbacks without libdvdcss, so remote DVDs can't open
+          for lib in libdvdread/7.0.1/libdvdread-7.0.1 libdvdnav/7.0.0/libdvdnav-7.0.0; do
+            curl -sfL "https://download.videolan.org/pub/videolan/$lib.tar.xz" | tar xJ -C /tmp
+            src="/tmp/$(basename "$lib")"
+            meson setup "$src/build" "$src" --buildtype=release --prefix=/usr/local
+            sudo "$(which ninja)" -C "$src/build" install
+            sudo ldconfig
+          done
       - uses: msys2/setup-msys2@v2
         id: msys2
         if: runner.os == 'Windows'
