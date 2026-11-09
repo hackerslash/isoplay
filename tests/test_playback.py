@@ -84,6 +84,7 @@ class RemoteDiscTests(unittest.TestCase):
                 self.assertLess(time.monotonic(), deadline, "the disc never played a second")
                 time.sleep(0.1)
             self.assertAlmostEqual(player.duration, 4.0, delta=0.5)
+            self.assertGreater(player.audio_pts or 0, 0.5, "the disc's audio never played")  # video alone hid a broken disc
             self.assertFalse(any("Can't seek" in line for line in log), "a restarted DVD VM lost its stream")
         except BaseException:
             print("\n".join(log[-300:]), file=sys.stderr)  # what mpv saw, the only clue on a CI runner
