@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- ← and → skip 10 s on discs whenever no disc menu is on screen; they used to move the
+  menu cursor for the whole disc, so the film could only be skipped with Shift. ↑ and ↓ change
+  the volume outside menus too
+- Volume goes up to 150%, from the slider, the scroll wheel or ↑ and ↓
+
 ## 0.4.0
 
 - **isoplay now plays through libmpv instead of libVLC.** Disc menus take the mouse on every
