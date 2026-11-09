@@ -55,22 +55,25 @@ class DiskCacheTests(unittest.TestCase):
         cache.put(K, 0, b"data")
         self.assertIsNone(cache.get(K, 0))
 
-    def test_a_reopened_file_reads_what_a_reader_fetched_but_not_read_ahead(self):
+    def test_a_reopened_file_reads_menu_runs_but_not_a_film(self):
         media.DISK = DiskCache(self.root, limit=1 << 30)
         self.addCleanup(setattr, media, "DISK", None)
         mib = 1 << 20
-        first = Upstream()
-        blocks = media.Blocks("http://host/disc.iso", size=64 * mib, upstream=first, bs=mib)
+        blocks = media.Blocks("http://host/disc.iso", size=256 * mib, upstream=Upstream(), bs=mib, ahead=64)
         data = blocks.read(0, mib)
-        blocks.prefetch(mib)  # a reader on block 1, read-ahead behind it
-        blocks.read(mib, mib)
+        for i in range(1, 48):  # a reader streaming on in order, read-ahead behind it
+            blocks.prefetch(i * mib)
+            blocks.block(i).result()
+        blocks.pool.shutdown(wait=True)
         blocks.close()
         again = Upstream()
-        reopened = media.Blocks("http://host/disc.iso", size=64 * mib, upstream=again, bs=mib)
+        reopened = media.Blocks("http://host/disc.iso", size=256 * mib, upstream=again, bs=mib)
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.read(0, mib), data)
         self.assertEqual(again.calls, 0)
-        self.assertFalse(media.DISK.has(reopened.disk_key, 3))  # read-ahead only ever lived in RAM
+        key = reopened.disk_key
+        self.assertTrue(all(media.DISK.has(key, i) for i in range(media.KEEP_RUN // mib)))  # a menu clip's run
+        self.assertFalse(any(media.DISK.has(key, i) for i in range(48, 64)))  # a film's read-ahead stays in RAM
 
 
 if __name__ == "__main__":

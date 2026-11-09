@@ -222,6 +222,7 @@ RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs
 # How far read-ahead runs past the player: ~20 s of UHD. mpv's own readahead is shorter so a
 # start or seek is quick; this one fills in the background while it plays.
 AHEAD = 160 << 20
+KEEP_RUN = 32 << 20  # read-ahead kept on disk from the start of each in-order run; past it, a film plays
 
 
 class Blocks:
@@ -415,8 +416,11 @@ class Blocks:
                 self.streak = [first, first]
             self.streak[1] = max(self.streak[1], first)
             ahead = min(self.ahead, self.run + 2 * (first - self.streak[0]))
+            kept = self.streak[0] + KEEP_RUN // self.bs  # the start of a run is a menu clip, or where a film resumes
         last = min(first + 1 + ahead, (self.size + self.bs - 1) // self.bs)
-        self._queue_span(first + 1, last, limit=self._streams() + 1, pool=self.background, store=False)
+        if first + 1 < kept:
+            self._queue_span(first + 1, min(last, kept), limit=self._streams() + 1, pool=self.background)
+        self._queue_span(max(first + 1, kept), last, limit=self._streams() + 1, pool=self.background, store=False)
 
     def close(self):
         if self.own_pool:
