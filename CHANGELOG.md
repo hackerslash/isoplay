@@ -12,6 +12,11 @@
 - The upstream survives flaky hosts: 429/502/503/504 are retried with backoff (honouring
   Retry-After), connection drops back off instead of hammering, and an error page never
   poisons the connection the next range reuses
+- Films resume where they left off (saved on close, forgotten at the end; menus always restart)
+- Audio/subtitle language preferences, audio passthrough to a receiver, and a Copy Diagnostics
+  report (with passwords stripped) for bug reports
+- Mouse without menus: scroll-wheel volume, single click pauses, double click full-screens,
+  right click opens the track menu
 
 ## 0.3.7
 

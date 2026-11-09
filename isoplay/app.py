@@ -1,6 +1,8 @@
 """The player window."""
 import json
 import os
+import platform
+import re
 import sys
 import threading
 import time
@@ -8,8 +10,10 @@ from pathlib import Path
 
 from isoplay import runtime  # noqa: F401 - points libmpv, libbluray and Java at the bundle
 
+import PySide6  # noqa: E402 - the diagnostics report names the Qt binding version
+
 from PySide6.QtCore import (  # noqa: E402
-    QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal,
+    QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal, qVersion,
 )
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence, QSurfaceFormat  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -43,6 +47,10 @@ STUCK = 8  # seconds a feature-length title may sit frozen at its end, just open
 FIT = {"fit": "Fit to Window", "fill": "Fill Window", "stretch": "Stretch to Window"}
 SUB_EXT = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".smi", ".ttml"}
 CACHE_GB = (0, 1, 2, 5, 10, 20, 50)  # disk cache sizes offered; 2 unless changed
+LANG_CHOICES = (("Disc Default", ""), ("English", "en,eng"), ("Spanish", "es,spa"),
+                ("French", "fr,fra,fre"), ("German", "de,deu,ger"), ("Italian", "it,ita"),
+                ("Portuguese", "pt,por"), ("Japanese", "ja,jpn"), ("Korean", "ko,kor"),
+                ("Chinese", "zh,zho,chi"), ("Hindi", "hi,hin"), ("Russian", "ru,rus"))
 
 
 class Bridge(QObject):
@@ -66,6 +74,8 @@ class Player(QMainWindow):
         media.DISK = DiskCache(Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "blocks",
                                cache_gb * GB)
         self.engine = MpvEngine()
+        self.apply_languages()
+        self.engine.set_passthrough(self.settings.value("audio/passthrough", False, type=bool))
         self.disc = self.proxy = self.current = None
         self.disc_root, self.discs = None, ()
         self.ask_disc = False
@@ -86,6 +96,11 @@ class Player(QMainWindow):
         self.welcome = self.build_welcome()
         self.stack.addWidget(self.welcome)
         self.video = self.engine.surface(self)
+        self.click_timer = QTimer(self, singleShot=True, timeout=self.toggle_pause)
+        self.video.wheeled.connect(lambda steps: self.nudge_volume(5 * steps))
+        self.video.double_clicked.connect(self.on_video_double_clicked)
+        self.video.clicked.connect(self.on_video_clicked)
+        self.video.context_requested.connect(self.tracks_menu)
         self.stack.addWidget(self.video)
         self.chooser = DiscChooser()
         self.chooser.selected.connect(self.choose_disc)
@@ -163,16 +178,23 @@ class Player(QMainWindow):
         self.act_auto_updates.setChecked(self.settings.value("updates/automatic", True, type=bool))
         self.updater.busy_changed.connect(lambda busy: self.act_updates.setEnabled(not busy))
         self.cache_menu = self.build_cache_menu()
+        self.audio_menu = self.build_language_menu("Audio Language", "lang/audio")
+        self.sub_menu = self.build_language_menu("Subtitle Language", "lang/sub", off=True)
+        self.act_passthrough = self.action("Pass Audio Through to Receiver", None, self.passthrough_changed,
+                                           checkable=True)
+        self.act_passthrough.setChecked(self.settings.value("audio/passthrough", False, type=bool))
+        self.act_diagnostics = self.action("Copy Diagnostics", None, self.copy_diagnostics)
         if MAC:
             bar = self.menuBar()
             for title, acts in (("File", (self.act_open, self.act_folder, self.act_url, self.act_paste,
                                           None, self.act_close)),
                                 ("Playback", (self.act_pause, None, self.act_prev, self.act_next, None,
                                               self.act_discmenu, self.act_main, None, self.act_menus,
-                                              self.cache_menu)),
+                                              self.cache_menu, self.audio_menu, self.sub_menu,
+                                              self.act_passthrough)),
                                 ("Video", (self.act_full, None, *self.fit_group.actions(),
                                            None, self.act_subs)),
-                                ("Help", (self.act_updates, self.act_auto_updates))):
+                                ("Help", (self.act_updates, self.act_auto_updates, self.act_diagnostics))):
                 m = bar.addMenu(title)
                 for a in acts:
                     if isinstance(a, QMenu):
@@ -208,6 +230,62 @@ class Player(QMainWindow):
         threading.Thread(target=media.DISK.clear, daemon=True).start()
         self.flash("Disk cache cleared", 1.5)
 
+    def build_language_menu(self, title, key, off=False):
+        menu = QMenu(title, self, objectName="cacheMenu")
+        menu.setStyleSheet(OPTIONS_CSS)
+        group = QActionGroup(menu)
+        chosen = self.settings.value(key, "")
+        choices = list(LANG_CHOICES)
+        if off:
+            choices.insert(1, ("Off", "no"))
+        name = title.replace("Language", "language")
+        for label, code in choices:
+            item = menu.addAction(label)
+            item.setCheckable(True)
+            item.setChecked(code == chosen)
+            item.triggered.connect(lambda _=False, k=key, n=name, c=code, lb=label:
+                                   self.set_language(k, n, c, lb))
+            group.addAction(item)
+        return menu
+
+    def set_language(self, key, name, code, label):
+        self.settings.setValue(key, code)
+        self.apply_languages()
+        self.flash(f"{name}: {label}", 1.5)
+
+    def apply_languages(self):
+        self.engine.set_languages(self.settings.value("lang/audio", ""), self.settings.value("lang/sub", ""))
+
+    def passthrough_changed(self):
+        on = self.act_passthrough.isChecked()
+        self.settings.setValue("audio/passthrough", on)
+        self.engine.set_passthrough(on)
+        self.flash("Audio passthrough on" if on else "Audio passthrough off", 1.5)
+
+    def copy_diagnostics(self):
+        try:
+            mpv_version = self.engine.player.mpv_version
+        except Exception:  # noqa: BLE001 - no player means no version to report
+            mpv_version = "unknown"
+        if media.DISK is not None:
+            size = media.DISK.size
+            cache = f"Disk cache: {size / GB:.1f} GB of {media.DISK.limit / GB:.1f} GB" if size is not None \
+                else f"Disk cache: limit {media.DISK.limit / GB:.1f} GB"
+        else:
+            cache = "Disk cache: none"
+        src = re.sub(r"(://)[^/\s@]+@", r"\1***@", self.current or "")
+        report = "\n".join((f"isoplay {__version__}",
+                            platform.platform(),
+                            f"Python {platform.python_version()} · PySide6 {PySide6.__version__} · Qt {qVersion()}",
+                            f"mpv {mpv_version}",
+                            cache,
+                            f"Source: {src}",
+                            f"Disc: {KIND.get(self.disc) if self.disc else 'none'}",
+                            "",
+                            self.engine.log_tail()))
+        QApplication.clipboard().setText(report)
+        self.flash("Diagnostics copied")
+
     def build_welcome(self):
         page = QWidget(objectName="welcome")
         outer = QHBoxLayout(page)
@@ -242,6 +320,11 @@ class Player(QMainWindow):
         options.setToolTip("Playback and update preferences")
         options.setPopupMode(QToolButton.InstantPopup)
         preferences = OptionsMenu(options, self.act_menus, self.act_auto_updates, self.act_updates, self.cache_menu)
+        if not MAC:
+            preferences.insertMenu(self.act_updates, self.audio_menu)
+            preferences.insertMenu(self.act_updates, self.sub_menu)
+            preferences.insertAction(self.act_updates, self.act_passthrough)
+            preferences.addAction(self.act_diagnostics)
         options.setMenu(preferences)
         head.addWidget(options)
         col.addLayout(head)
@@ -340,7 +423,7 @@ class Player(QMainWindow):
         right.setSpacing(2)
         right.addStretch()
         self.menu_btn = btn("disc", "Disc menu (M)", lambda: self.engine.navigate("popup"))
-        self.tracks_btn = btn("tracks", "Audio, subtitles and disc options", self.tracks_menu)
+        self.tracks_btn = btn("tracks", "Audio, subtitles and disc options", lambda: self.tracks_menu())
         self.full_btn = btn("full", "Full screen (F)", self.toggle_full)
         for b in (self.menu_btn, self.tracks_btn, self.full_btn):
             right.addWidget(b)
@@ -401,6 +484,37 @@ class Player(QMainWindow):
             empty.setContentsMargins(10, 6, 10, 6)
             self.recent_box.addWidget(empty)
         self.clear_btn.setVisible(bool(items))
+
+    # --- resume -----------------------------------------------------------------------------------
+
+    def resume(self):
+        try:
+            entries = json.loads(self.settings.value("resume", "{}"))
+        except ValueError:
+            return {}
+        return entries if isinstance(entries, dict) else {}
+
+    def save_position(self):
+        src = self.current
+        if not src:
+            return
+        entries = self.resume()
+        length, position = self.engine.length() / 1000, self.engine.time() / 1000
+        if (not (self.disc and self.use_menus) and length > 5 * 60 and 60 < position < length - 120):
+            entries[src] = {"t": position, "at": time.time()}
+        else:
+            entries.pop(src, None)
+        newest = sorted(entries.items(), key=lambda kv: kv[1].get("at", 0), reverse=True)[:50]
+        self.settings.setValue("resume", json.dumps(dict(newest)))
+
+    def forget_position(self):
+        src = self.current
+        if not src:
+            return
+        entries = self.resume()
+        if src in entries:
+            entries.pop(src)
+            self.settings.setValue("resume", json.dumps(entries))
 
     # --- opening -----------------------------------------------------------------------------------
 
@@ -470,6 +584,7 @@ class Player(QMainWindow):
             self.play(self.current, menus=self.use_menus, disc_root=root)
 
     def close_video(self):
+        self.save_position()
         self.token += 1
         self.engine.close()
         if self.proxy:
@@ -522,7 +637,12 @@ class Player(QMainWindow):
             self.stack.setCurrentWidget(self.chooser)
             self.osd_until = self.busy_until = 0
             return
-        self.engine.open(mrl, kind=self.disc, menus=self.use_menus)
+        resume = 0
+        if not (self.disc and self.use_menus):
+            entry = self.resume().get(self.current)
+            if isinstance(entry, dict) and entry.get("t"):
+                resume = entry["t"]
+        self.engine.open(mrl, kind=self.disc, menus=self.use_menus, start=resume)
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
         self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
@@ -531,6 +651,8 @@ class Player(QMainWindow):
         kind = KIND.get(self.disc)
         self.flash(f"{kind}: loading {'disc menu' if self.use_menus else 'main title'}" if kind else "Loading",
                    sticky=True, busy=True)
+        if resume:
+            self.flash(f"Resumed at {fmt(int(resume * 1000))} — press Home to start over")
         self.menu_btn.setVisible(bool(self.disc) and self.use_menus)
         self.act_discmenu.setEnabled(bool(self.disc) and self.use_menus)
 
@@ -579,8 +701,10 @@ class Player(QMainWindow):
         elif name == "end":
             if self.deadline:  # reached the end without ever showing a frame
                 self.fail("This wouldn't play")
-            elif not self.disc:
-                self.flash("Finished", seconds=3)
+            else:
+                self.forget_position()
+                if not self.disc:
+                    self.flash("Finished", seconds=3)
         elif name == "error":
             if self.disc and self.use_menus:
                 self.flash("The disc menu didn't load. Try Play Main Title Without Menus", seconds=10)
@@ -618,6 +742,15 @@ class Player(QMainWindow):
         self.vol.setValue(self.vol.value() + d)
         self.flash(f"Volume {self.vol.value()}%", 1.2)
 
+    def on_video_clicked(self):
+        if (self.disc and self.use_menus and self.menu_active()) or not self.engine.has_media():
+            return
+        self.click_timer.start(QApplication.doubleClickInterval())
+
+    def on_video_double_clicked(self):
+        self.click_timer.stop()
+        self.toggle_full()
+
     def seek_by(self, ms):
         target = max(0, self.engine.time() + ms)
         self.engine.seek(target)
@@ -630,7 +763,7 @@ class Player(QMainWindow):
         else:
             self.seek_by(d * 10000)
 
-    def tracks_menu(self):
+    def tracks_menu(self, pos=None):
         menu = QMenu(self)
         listed = self.engine.tracks()
         for title, kind in (("Audio", "audio"), ("Subtitles", "sub")):
@@ -660,7 +793,9 @@ class Player(QMainWindow):
             menu.addAction(self.act_menus)
         menu.addSeparator()
         menu.addAction(self.act_updates)
-        menu.exec(self.tracks_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)))
+        if pos is None:
+            pos = self.tracks_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6))
+        menu.exec(pos)
         menu.deleteLater()  # parented to the window, so it would otherwise live until the app quits
 
     def add_disc_choices(self, menu):
@@ -819,6 +954,8 @@ class Player(QMainWindow):
         disc_nav = self.disc and self.use_menus
         if k in (Qt.Key_Left, Qt.Key_Right) and (shift or not disc_nav):
             self.seek_by(10000 if k == Qt.Key_Right else -10000)
+        elif k == Qt.Key_Home:
+            self.engine.seek(0)
         elif k in (Qt.Key_Up, Qt.Key_Down) and not disc_nav:
             self.nudge_volume(5 if k == Qt.Key_Up else -5)
         elif k in self.NAV and disc_nav:
@@ -864,6 +1001,7 @@ class Player(QMainWindow):
             self.play(src)
 
     def closeEvent(self, e):
+        self.save_position()
         self.timer.stop()
         self.engine.close()
         self.engine.shutdown()

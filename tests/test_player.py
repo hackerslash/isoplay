@@ -1,4 +1,5 @@
 """Player behaviour that needs no libmpv: methods are called unbound on a stub."""
+import json
 import os
 import time
 import unittest
@@ -329,6 +330,64 @@ class SubtitleTests(unittest.TestCase):
     def test_a_film_dropped_while_playing_replaces_it(self):
         player = self.drop("/tmp/other.mkv")
         player.play.assert_called_once_with("/tmp/other.mkv")
+
+
+class ResumeTests(unittest.TestCase):
+    def played(self, **overrides):
+        player = Mock(current="https://host/film.mkv", disc=None, use_menus=False)
+        player.engine.length.return_value = 3_600_000
+        player.engine.time.return_value = 300_000
+        player.settings.value.return_value = "{}"
+        player.resume = lambda: Player.resume(player)
+        player.__dict__.update(overrides)
+        return player
+
+    def saved(self, player):
+        Player.save_position(player)
+        return json.loads(player.settings.setValue.call_args.args[1])
+
+    def test_a_film_left_midway_is_offered_again(self):
+        self.assertEqual(self.saved(self.played())["https://host/film.mkv"]["t"], 300)
+
+    def test_a_menu_a_short_clip_the_first_minute_and_the_credits_are_not_kept(self):
+        cases = [dict(disc="bluray", use_menus=True),  # menus always start over
+                 dict(engine=Mock(length=Mock(return_value=240_000), time=Mock(return_value=120_000))),
+                 dict(engine=Mock(length=Mock(return_value=3_600_000), time=Mock(return_value=30_000))),
+                 dict(engine=Mock(length=Mock(return_value=3_600_000), time=Mock(return_value=3_540_000)))]
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                self.assertEqual(self.saved(self.played(**kwargs)), {})
+
+    def test_a_finished_film_forgets_its_position(self):
+        player = self.played()
+        player.settings.value.return_value = json.dumps({"https://host/film.mkv": {"t": 300, "at": 1}})
+        Player.forget_position(player)
+        self.assertEqual(json.loads(player.settings.setValue.call_args.args[1]), {})
+
+    def test_garbage_resume_settings_read_as_empty(self):
+        player = self.played()
+        player.settings.value.return_value = "garbage{"
+        self.assertEqual(Player.resume(player), {})
+
+
+class PreferenceTests(unittest.TestCase):
+    def test_a_language_choice_is_saved_applied_and_announced(self):
+        player = Mock()
+        player.settings.value.return_value = ""
+        Player.set_language(player, "lang/sub", "Subtitle language", "no", "Off")
+        player.settings.setValue.assert_called_once_with("lang/sub", "no")
+        player.apply_languages.assert_called_once_with()
+        player.flash.assert_called_once_with("Subtitle language: Off", 1.5)
+
+    def test_diagnostics_redact_the_password_in_the_link(self):
+        player = Mock(current="https://me:s3cret@host/f", disc=None)
+        player.engine.player.mpv_version = "0.42.0"
+        player.engine.log_tail.return_value = "tail"
+        with mock.patch("isoplay.app.QApplication") as qt, mock.patch("isoplay.media.DISK", None):
+            Player.copy_diagnostics(player)
+            text = qt.clipboard.return_value.setText.call_args.args[0]
+        self.assertIn("https://***@host/f", text)
+        self.assertNotIn("s3cret", text)
 
 
 if __name__ == "__main__":

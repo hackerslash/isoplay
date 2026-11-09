@@ -257,7 +257,7 @@ class ProjectionTests(unittest.TestCase):
             with self.subTest(roots=roots):
                 proxy = SimpleNamespace(view=object()) if roots else None
                 player = SimpleNamespace(token=1, ask_disc=True, current="image.iso", use_menus=True,
-                                         chooser=Mock(), stack=Mock(), engine=Mock(),
+                                         chooser=Mock(), stack=Mock(), engine=Mock(), resume=lambda: {},
                                          remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock(),
                                          apply_fit=Mock())
                 result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy,
