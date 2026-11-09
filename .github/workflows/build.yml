@@ -87,6 +87,11 @@ jobs:
       - run: python build.py
       - run: python -X faulthandler -m unittest -v tests.test_welcome tests.test_player tests.test_engine tests.test_playback tests.test_diskcache
       - run: python -m tests.test_update_bundle
+      - name: Native backtrace of the playback test
+        if: failure() && runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends gdb
+          gdb -batch -ex run -ex "thread apply all bt 25" --args python -m unittest tests.test_playback 2>&1 | grep -v "^\[" | tail -200
       - uses: actions/upload-artifact@v4
         with:
           name: isoplay-${{ runner.os }}
