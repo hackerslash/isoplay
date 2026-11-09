@@ -2,23 +2,24 @@
 
 ## 0.4.0
 
-- **libmpv replaces libVLC.** Disc menus take the mouse on every platform, video is drawn into
-  the window by mpv's render API, and disc images stream to a patched libmpv
-  (`tools/mpv-stream-discs.patch`, built by `tools/build_mpv.py`) that reads them through
-  libbluray's and libdvdnav's block callbacks. Bundles ship that libmpv with its libraries and
-  BD-J jars built for the bundled libbluray
-- mpv's cache, readahead and FFmpeg reconnects are tuned for network play, and seeks show the
-  buffering spinner while the picture is frozen
-- The upstream survives flaky hosts: 429/502/503/504 are retried with backoff (honouring
-  Retry-After), connection drops back off instead of hammering, and an error page never
-  poisons the connection the next range reuses
-- Films resume where they left off (saved on close, forgotten at the end; menus always restart)
-- Audio/subtitle language preferences, audio passthrough to a receiver, and a Copy Diagnostics
-  report (with passwords stripped) for bug reports
-- Mouse without menus: scroll-wheel volume, single click pauses, double click full-screens,
-  right click opens the track menu
-- The controls, toasts and spinner are drawn inside the window, so they no longer trail it
-  while it moves
+- **isoplay now plays through libmpv instead of libVLC.** Disc menus take the mouse on every
+  platform: hover a button to highlight it, click to choose it. Video is drawn inside the
+  window, so the controls, toasts and spinner move with it instead of trailing behind
+- Films resume where you left off; press Home to start over. Discs played with menus always
+  start at the menu
+- Preferred audio and subtitle languages, audio passthrough to a receiver, and **Copy
+  Diagnostics**, a report for bug reports with passwords removed
+- Without a disc menu, the mouse controls playback: click to pause, double click for full
+  screen, scroll for volume, right click for the tracks menu
+- Flaky hosts are survived: throttling and server errors are retried with backoff (honouring
+  Retry-After), a dropped connection resumes where it stopped, and an error page never
+  corrupts the next read. A file that changes on the server while playing stops with a message
+  instead of playing garbage
+- Opening is faster and says what it is doing ("Checking the link", "Listing the share",
+  "Reading the disc"). A reopened share skips its listing, read-ahead requests grow with the
+  host's speed, and the start of each menu clip or resume point stays in the disk cache
+- Seeks show the buffering spinner while the picture is frozen
+- Linux no longer forces X11, so isoplay can run as a native Wayland app
 
 ## 0.3.7
 
