@@ -40,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config ant libxcb-cursor0 \
             libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
-            libavdevice-dev libass-dev libdvdnav-dev libbluray-dev libgl-dev libegl-dev
+            libavdevice-dev libass-dev libdvdnav-dev libbluray-dev libgl-dev libegl-dev libcurl4-openssl-dev
           # mpv 0.42 needs libplacebo >= 7.387; Ubuntu 24.04 ships 6.338
           git clone --depth 1 --branch v7.387.0 --recurse-submodules https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
           meson setup /tmp/libplacebo/build /tmp/libplacebo --buildtype=release --prefix=/usr/local \
@@ -56,7 +56,7 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-libplacebo mingw-w64-ucrt-x86_64-libass mingw-w64-ucrt-x86_64-libdvdnav
-            mingw-w64-ucrt-x86_64-libbluray
+            mingw-w64-ucrt-x86_64-libbluray mingw-w64-ucrt-x86_64-curl
       - name: Windows toolchain on PATH
         if: runner.os == 'Windows'
         run: |

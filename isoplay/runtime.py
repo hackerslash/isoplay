@@ -17,5 +17,9 @@ if (MPV_DIR / LIB).is_file():
 if (BASE / "jre").is_dir():
     os.environ["JAVA_HOME"] = str(BASE / "jre")
 
+# libcurl and urllib honour proxy variables; the loopback server must never go through one
+os.environ["no_proxy"] = os.environ["NO_PROXY"] = ",".join(
+    filter(None, (os.environ.get("NO_PROXY") or os.environ.get("no_proxy"), "127.0.0.1,localhost")))
+
 import certifi  # noqa: E402
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())  # frozen builds inherit the build host's trust store

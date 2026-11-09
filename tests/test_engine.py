@@ -178,7 +178,7 @@ class MpvNetworkTests(unittest.TestCase):
         self.assertEqual(engine.player._set["demuxer-readahead-secs"], "10")
         self.assertEqual(engine.player._set["stream-buffer-size"], "1048576")
         self.assertEqual(engine.player._set["network-timeout"], "30")
-        self.assertIn("reconnect", engine.player._set["stream-lavf-o"])
+        self.assertEqual(engine.player._set["curl-max-retries"], "8")
         self.assertEqual(engine.player._set["force-seekable"], "yes")
 
     def test_a_missing_option_does_not_sink_the_engine(self):
@@ -186,7 +186,7 @@ class MpvNetworkTests(unittest.TestCase):
         real_setitem = _Player.__setitem__
 
         def fail_once(self, name, value):
-            if name == "stream-lavf-o":
+            if name == "curl-max-retries":
                 raise RuntimeError("no such option")
             real_setitem(self, name, value)
 

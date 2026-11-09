@@ -54,7 +54,7 @@ def mpv():
     if not (MPV_BUILD / "build.ninja").exists():
         run("meson", "setup", MPV_BUILD, SRC, "--buildtype=release", f"--prefix={PREFIX}", "--libdir=lib",
             "-Dlibmpv=true", "-Dcplayer=false", "-Ddvdnav=enabled",
-            "-Dlibbluray=enabled", "-Dlua=disabled", "-Djavascript=disabled", "-Dvapoursynth=disabled",
+            "-Dlibbluray=enabled", "-Dlibcurl=enabled", "-Dlua=disabled", "-Djavascript=disabled", "-Dvapoursynth=disabled",
             "-Dlibarchive=disabled", "-Drubberband=disabled", "-Dmanpage-build=disabled")
     run("ninja", "-C", MPV_BUILD)
     run("ninja", "-C", MPV_BUILD, "install")

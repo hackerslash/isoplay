@@ -9,6 +9,7 @@ import ctypes
 import ctypes.util
 import os
 import queue
+import sys
 import threading
 import time
 
@@ -138,8 +139,9 @@ OPTIONS = {
     "demuxer-readahead-secs": "10",  # headroom past the play head (default 1); seeks stall less
     "stream-buffer-size": "1048576",  # fewer round trips per megabyte (default 128 KiB)
     "network-timeout": "30",  # idle seconds before a dead socket errors (the open deadline is 45)
-    "stream-lavf-o": "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
-                      "reconnect_delay_max=5",  # flaky hosts: FFmpeg redials instead of failing
+    "curl-connect-timeout": "15",
+    "curl-max-retries": "8",  # resumes at the next missing byte after a drop or an HTTP/2 reset
+    "curl-max-request-size": str(16 << 20),  # hosts that throttle one long-lived connection
     "force-seekable": "yes",  # hosts that omit Accept-Ranges still honor Range on GET
 }
 
@@ -186,7 +188,10 @@ class MpvEngine:
                 self._emit(name)
 
     def _apply_options(self):
-        for name, value in OPTIONS.items():
+        options = dict(OPTIONS)
+        if sys.platform != "darwin" and os.environ.get("SSL_CERT_FILE"):  # an OpenSSL libcurl has no system store
+            options["tls-ca-file"] = os.environ["SSL_CERT_FILE"]
+        for name, value in options.items():
             try:
                 self.player[name] = value
             except Exception as e:  # noqa: BLE001 - an older or newer libmpv without this option
