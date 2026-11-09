@@ -403,7 +403,7 @@ class Player(QMainWindow):
         left = QHBoxLayout()
         left.setSpacing(4)
         self.mute_btn = btn("volume", "Mute", self.toggle_mute, 17)
-        self.vol = QSlider(Qt.Horizontal, maximum=100, value=100, focusPolicy=Qt.NoFocus, fixedWidth=72)
+        self.vol = QSlider(Qt.Horizontal, maximum=150, value=100, focusPolicy=Qt.NoFocus, fixedWidth=72)
         self.vol.valueChanged.connect(self.engine.set_volume)
         left.addWidget(self.mute_btn)
         left.addWidget(self.vol)

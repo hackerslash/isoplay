@@ -146,6 +146,7 @@ OPTIONS = {
     "curl-max-retries": "8",  # resumes at the next missing byte after a drop or an HTTP/2 reset
     "curl-max-request-size": str(16 << 20),  # hosts that throttle one long-lived connection
     "force-seekable": "yes",  # hosts that omit Accept-Ranges still honor Range on GET
+    "volume-max": "150",  # default 130; the volume slider goes to 150
 }
 
 
