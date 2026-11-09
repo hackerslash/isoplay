@@ -81,11 +81,14 @@ def bdj_jar():
         with tarfile.open(archive) as tar:
             tar.extractall(BUILD, filter="data")
     shutil.rmtree(dist, ignore_errors=True)
-    run("ant", "-f", src / "src/libbluray/bdj/build.xml",
-        f"-Dbuild={BUILD / 'bdj-build'}", f"-Ddist={dist}", "-Dbootclasspath=",
-        "-Dsrc_awt=:java-j2se:java-build-support", f"-Djavac_path={shutil.which('javac')}",
-        "-Djavac_arg=-Xlint:-deprecation", f"-Dversion=j2se-{version}",
-        "-Djava_version_asm=1.8", "-Djava_version_bdj=1.8")  # JDK 17 refuses target 7
+    # A file, not -D arguments: Windows' ant.bat splits "-Dsrc_awt=:java-j2se:..." into a target
+    props = {"build": (BUILD / "bdj-build").as_posix(), "dist": dist.as_posix(), "bootclasspath": "",
+             "src_awt": ":java-j2se:java-build-support", "javac_path": Path(shutil.which("javac")).as_posix(),
+             "javac_arg": "-Xlint:-deprecation", "version": f"j2se-{version}",
+             "java_version_asm": "1.8", "java_version_bdj": "1.8"}  # JDK 17 refuses target 7
+    props_file = BUILD / "bdj.properties"
+    props_file.write_text("".join(f"{k}={v}\n" for k, v in props.items()))
+    run("ant", "-f", src / "src/libbluray/bdj/build.xml", "-propertyfile", props_file)
     print(f"jar for libbluray {version} -> {dist}", flush=True)
 
 
