@@ -68,6 +68,9 @@ jobs:
         run: |
           choco install ant --no-progress -y
           "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> $env:GITHUB_PATH
+          # MSYS2 pulls in its own Python; keep setup-python's ahead of it (later lines win)
+          "$env:pythonLocation\Scripts" >> $env:GITHUB_PATH
+          "$env:pythonLocation" >> $env:GITHUB_PATH
       - run: pip install -r requirements-build.txt
       - run: python -m unittest -v tests.test_updates tests.test_update_ui
       - run: python -m unittest -v tests.test_disc_image

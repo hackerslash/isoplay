@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -67,10 +68,16 @@ def bdj_jar():
     src = BUILD / f"libbluray-{version}"
     dist = BUILD / "libbluray"
     if not (src / "src/libbluray/bdj/build.xml").exists():
-        archive = BUILD / f"libbluray-{version}.tar.xz"
-        url = f"https://download.videolan.org/pub/videolan/libbluray/{version}/libbluray-{version}.tar.xz"
-        print("+ download", url, flush=True)
-        urllib.request.urlretrieve(url, archive)
+        for ext in ("xz", "bz2"):  # releases before 1.3.4 or so ship only .tar.bz2
+            archive = BUILD / f"libbluray-{version}.tar.{ext}"
+            url = f"https://download.videolan.org/pub/videolan/libbluray/{version}/{archive.name}"
+            print("+ download", url, flush=True)
+            try:
+                urllib.request.urlretrieve(url, archive)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code != 404 or ext == "bz2":
+                    raise
         with tarfile.open(archive) as tar:
             tar.extractall(BUILD, filter="data")
     shutil.rmtree(dist, ignore_errors=True)

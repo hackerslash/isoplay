@@ -8,6 +8,7 @@ the `mouse` command's mouse-pos is in OSD units, so pixels would misland.
 import collections
 import ctypes
 import ctypes.util
+import locale
 import os
 import queue
 import re
@@ -169,6 +170,8 @@ class MpvEngine:
             if debug:
                 print(f"[mpv {level} {prefix}] {text.strip()}", flush=True)
 
+        # QApplication sets the user's locale, and mpv_create refuses (NULL, so a segfault) without C numbers
+        locale.setlocale(locale.LC_NUMERIC, "C")
         self.player = self.mpv.MPV(config="no", vo="libmpv", idle="yes", keep_open="no",
                                    input_default_bindings="no", save_watch_history="no", user_agent=UA,
                                    hwdec="auto-safe", loglevel="verbose" if debug == "verbose" else "info",
