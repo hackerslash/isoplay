@@ -369,6 +369,18 @@ class ResumeTests(unittest.TestCase):
         player.settings.value.return_value = "garbage{"
         self.assertEqual(Player.resume(player), {})
 
+    def test_start_offers_the_remembered_spot_for_a_plain_video(self):
+        player = Mock(token=0, current="https://host/film.mkv", disc=None, use_menus=True)
+        player.resume.return_value = {"https://host/film.mkv": {"t": 745, "at": 1}}
+        Player.start(player, 0, ("http://127.0.0.1/disc.iso", None, None, (), None))
+        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind=None, menus=True, start=745)
+
+    def test_a_disc_with_menus_starts_from_the_beginning(self):
+        player = Mock(token=0, current="https://host/disc.iso", disc="bluray", use_menus=True)
+        player.resume.return_value = {"https://host/disc.iso": {"t": 745, "at": 1}}
+        Player.start(player, 0, ("http://127.0.0.1/disc.iso", "bluray", None, (), None))
+        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind="bluray", menus=True, start=0)
+
 
 class PreferenceTests(unittest.TestCase):
     def test_a_language_choice_is_saved_applied_and_announced(self):
@@ -388,6 +400,21 @@ class PreferenceTests(unittest.TestCase):
             text = qt.clipboard.return_value.setText.call_args.args[0]
         self.assertIn("https://***@host/f", text)
         self.assertNotIn("s3cret", text)
+
+    def test_languages_are_handed_to_the_engine(self):
+        player = Mock()
+        player.settings.value.side_effect = lambda key, default="": {"lang/audio": "en,eng", "lang/sub": "no"}.get(key, default)
+        Player.apply_languages(player)
+        player.engine.set_languages.assert_called_once_with("en,eng", "no")
+
+
+class MouseTests(unittest.TestCase):
+    def test_a_click_is_ignored_while_a_disc_menu_is_active(self):
+        player = Mock(disc="bluray", use_menus=True)
+        player.menu_active.return_value = True
+        player.engine.has_media.return_value = True
+        Player.on_video_clicked(player)
+        player.click_timer.start.assert_not_called()
 
 
 if __name__ == "__main__":
