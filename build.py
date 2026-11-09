@@ -202,6 +202,15 @@ def main():
         else:
             shutil.copytree(src, internal / name, symlinks=True)
 
+    if sys.platform not in ("darwin", "win32"):
+        linux_deps(internal)
+    shipped = app / "Contents/Resources" if sys.platform == "darwin" else DIST / "isoplay"
+    bundle = app / "Contents" if sys.platform == "darwin" else shipped
+    libs = sorted({f.name for f in bundle.rglob("*") if re.search(r"\.(dylib|dll|so)(\.|$)", f.name)})
+    (shipped / "THIRD_PARTY_NOTICES.md").write_text((ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+                                                    + "\n## Native libraries in this bundle\n\n"
+                                                    + "".join(f"- {name}\n" for name in libs))
+
     tag = f"{ {'darwin': 'macos', 'win32': 'windows'}.get(sys.platform, 'linux') }-{platform.machine().lower()}"
     if sys.platform == "darwin":
         # --deep rejects the JRE/libbluray data files; sign each Mach-O, then the bundle
@@ -216,7 +225,6 @@ def main():
         check(DIST / "isoplay/isoplay.exe")
         shutil.make_archive(str(DIST / f"isoplay-{tag}"), "zip", DIST, "isoplay")
     else:
-        linux_deps(internal)
         check(DIST / "isoplay/isoplay")
         with tarfile.open(DIST / f"isoplay-{tag}.tar.gz", "w:gz") as t:
             t.add(DIST / "isoplay", "isoplay")

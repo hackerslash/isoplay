@@ -106,4 +106,4 @@ failure upstream (`ISOPLAY_DEBUG=verbose` for libbluray's BD-J too).
 
 ## License
 
-MIT. Bundles include mpv and FFmpeg (GPL) and OpenJDK (GPLv2 with Classpath Exception).
+MIT. Bundles include mpv and FFmpeg (GPL) and OpenJDK (GPLv2 with Classpath Exception); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
