@@ -2,7 +2,6 @@
 import json
 import os
 import platform
-import re
 import sys
 import threading
 import time
@@ -25,7 +24,7 @@ from isoplay import media, updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
 from isoplay.media import display_name, fmt, is_url, normalize, prepare  # noqa: E402
 from isoplay.diskcache import GB, DiskCache  # noqa: E402
-from isoplay.mpv import MpvEngine  # noqa: E402
+from isoplay.mpv import USERINFO, MpvEngine  # noqa: E402
 from isoplay.runtime import BASE, MPV_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, OPTIONS_CSS, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
@@ -109,7 +108,6 @@ class Player(QMainWindow):
         self.chooser.cancelled.connect(self.close_video)
         self.stack.addWidget(self.chooser)
         self.setCentralWidget(self.stack)
-        self.engine.settle(self.video)
 
         self.controls = Overlay(self, clickable=True)
         self.build_controls()
@@ -265,21 +263,17 @@ class Player(QMainWindow):
         self.flash("Audio passthrough on" if on else "Audio passthrough off", 1.5)
 
     def copy_diagnostics(self):
-        try:
-            mpv_version = self.engine.player.mpv_version
-        except Exception:  # noqa: BLE001 - no player means no version to report
-            mpv_version = "unknown"
         if media.DISK is not None:
             size = media.DISK.size
             cache = f"Disk cache: {size / GB:.1f} GB of {media.DISK.limit / GB:.1f} GB" if size is not None \
                 else f"Disk cache: limit {media.DISK.limit / GB:.1f} GB"
         else:
             cache = "Disk cache: none"
-        src = re.sub(r"(://)[^/\s@]+@", r"\1***@", self.current or "")
+        src = USERINFO.sub(r"\1***@", self.current or "")
         report = "\n".join((f"isoplay {__version__}",
                             platform.platform(),
                             f"Python {platform.python_version()} · PySide6 {PySide6.__version__} · Qt {qVersion()}",
-                            f"mpv {mpv_version}",
+                            f"mpv {self.engine.version()}",
                             cache,
                             f"Source: {src}",
                             f"Disc: {KIND.get(self.disc) if self.disc else 'none'}",
@@ -541,8 +535,8 @@ class Player(QMainWindow):
 
     def load_subtitles(self, path):
         uri = path if is_url(path) else Path(path).as_uri()
-        ok = self.engine.subtitles(uri)
-        self.flash(f"Subtitles: {display_name(path)}" if ok else "Couldn't load those subtitles", 2.0)
+        self.engine.subtitles(uri)
+        self.flash(f"Subtitles: {display_name(path)}", 2.0)
 
     def set_fit(self, mode):
         self.fit = mode
@@ -750,7 +744,7 @@ class Player(QMainWindow):
         self.flash(f"Volume {self.vol.value()}%", 1.2)
 
     def on_video_clicked(self):
-        if (self.disc and self.use_menus and self.menu_active()) or not self.engine.has_media():
+        if self.menu_active() or not self.engine.has_media():
             return
         self.click_timer.start(QApplication.doubleClickInterval())
 
@@ -1024,7 +1018,7 @@ def check():
     say = print if sys.stdout else (lambda *a: None)
     try:
         engine = MpvEngine()  # the app's own options: one a build lacks fails here, not at first play
-        say("libmpv", engine.player.mpv_version)
+        say("libmpv", engine.version())
         engine.shutdown()
         if MPV_DIR.is_dir():
             assert list(MPV_DIR.glob("libbluray-j2se-*.jar")), "libbluray jar missing"

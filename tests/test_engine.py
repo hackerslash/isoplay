@@ -175,6 +175,12 @@ class MpvOpenTests(unittest.TestCase):
         self.assertEqual(player.commands[-1], ("loadfile", "/films/a.mkv", "replace"))
         self.assertNotIn("dvd-device", player._set)
 
+    def test_mute_survives_opening_the_next_file(self):
+        engine, _ = _unbound(mute=True, time_pos=12.0)
+        MpvEngine.open(engine, "/films/b.mkv")
+        self.assertIsNone(engine.state.get("time_pos"))
+        self.assertFalse(MpvEngine.toggle_mute(engine))  # unmutes, not a second "Muted"
+
 
 class MpvNetworkTests(unittest.TestCase):
     """mpv's own network layer is tuned for isoplay's inputs: the loopback proxy behind discs

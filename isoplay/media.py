@@ -135,14 +135,9 @@ def _retry_after(headers):
 
 
 def _sleep(attempt, after=None):
-    if after is not None:
-        if after:
-            time.sleep(after)
-        return
-    delay = min(10, BACKOFF * 2 ** attempt)
-    delay *= 1 + random.random() * 0.25
-    if delay:
-        time.sleep(delay)
+    if after is None:
+        after = min(10, BACKOFF * 2 ** attempt) * (1 + random.random() * 0.25)
+    time.sleep(after)
 
 
 def _discard(response):
@@ -301,18 +296,19 @@ class Upstream:
                     try:
                         chunk = response.read(wanted - len(data))
                     except (urllib3.exceptions.HTTPError, http.client.HTTPException, OSError) as e:
-                        # read() raises before returning the bytes already read; the response
-                        # still holds them, so salvage what arrived and resume from there.
-                        got = b""
-                        while True:
+                        # read() raises before returning the bytes it already buffered; ask for
+                        # less until the ask fits what is held, and resume from there.
+                        n = wanted - len(data)
+                        while n:
                             try:
-                                more = response.read(1)
-                                got += more
-                                if not more:
-                                    break
+                                more = response.read(n)
                             except Exception:  # noqa: BLE001 - the connection is spent either way
+                                n //= 2
+                                continue
+                            if not more:
                                 break
-                        data.extend(got)
+                            data.extend(more)
+                            n = min(n, wanted - len(data))
                         if self.closed:
                             raise OSError("the stream was closed") from None
                         raise _Retry(repr(e)) from e
@@ -324,7 +320,7 @@ class Upstream:
                         raise _Retry(f"short body after {len(data)} bytes")
                     data.extend(chunk)
                 release = response.status == 206
-                return _Body(response.status, response.headers, bytes(data))
+                return _Body(response.status, response.headers, data)
             except _Retry as e:
                 if response is not None:
                     self._finish(response)
@@ -755,8 +751,8 @@ class Share(Served):
 
     def __init__(self, files):
         self.pool, self.ahead, self.warm = (ThreadPoolExecutor(SHARE_POOL) for _ in range(3))
-        hub, memory = Upstream(next(iter(files.values()))[0]), Memory(KEEP)
-        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=hub), self.ahead, memory)
+        self.hub, memory = Upstream(next(iter(files.values()))[0]), Memory(KEEP)
+        self.streams = {path: RemoteFile(link, size, self.pool, Upstream(link, share=self.hub), self.ahead, memory)
                         for path, (link, size) in files.items()}
         self._serve()
 
@@ -767,6 +763,7 @@ class Share(Served):
         super().close()
         for stream in self.streams.values():
             stream.close()
+        self.hub.close()
         for pool in (self.pool, self.ahead, self.warm):
             pool.shutdown(wait=False, cancel_futures=True)
 

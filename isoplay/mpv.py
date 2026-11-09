@@ -290,9 +290,6 @@ class MpvEngine:
         self.video_widget = MpvVideoWidget(self, parent)
         return self.video_widget
 
-    def settle(self, surface):
-        pass  # the render context is created by the widget's initializeGL, once there is a GL context
-
     def shutdown(self):
         self._mouse_queue.put_nowait(None)
         if self.render_context:  # mpv requires the render context freed, GL current, before terminate
@@ -334,7 +331,9 @@ class MpvEngine:
         self._vout = False
         self._stalled = self._seeking = False
         self._cache_state = None
+        mute = self.state.get("mute")
         self.state.clear()
+        self.state["mute"] = mute  # mpv keeps mute across files, so no change event re-reports it
         self._set("pause", "no")
         if kind in ("dvd", "bluray"):
             self._set("disc-menu", "yes" if menus else "no")
@@ -428,7 +427,6 @@ class MpvEngine:
 
     def subtitles(self, uri):
         self._send("sub-add", uri, "select")
-        return True
 
     def set_languages(self, audio, sub):
         """Comma lists of ISO 639 codes, "" for the file's own default; sub "no" starts with none."""
