@@ -948,7 +948,7 @@ class Player(QMainWindow):
 
     def keyPressEvent(self, e):
         k, shift = e.key(), e.modifiers() & Qt.ShiftModifier
-        disc_nav = self.disc and self.use_menus
+        disc_nav = self.menu_active()
         if k in (Qt.Key_Left, Qt.Key_Right) and (shift or not disc_nav):
             self.seek_by(10000 if k == Qt.Key_Right else -10000)
         elif k == Qt.Key_Home:

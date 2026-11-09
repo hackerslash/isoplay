@@ -75,7 +75,7 @@ Paste a link (⌘V / Ctrl+V), type one (⌘L / Ctrl+L), drop a file or link on t
 | Right click | tracks menu |
 | Scroll wheel | volume |
 | M | disc popup menu |
-| ← → (Shift on discs) | seek 10 s |
+| ← → (Shift in disc menus) | seek 10 s |
 | ↑ ↓ on videos | volume |
 | Home | back to the start |
 | Page Up / Down | previous or next chapter |
