@@ -6,8 +6,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
-    QWidgetAction,
+    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+    QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from isoplay.media import DISC_EXT, ago, origin, suffix

@@ -17,6 +17,8 @@
   report (with passwords stripped) for bug reports
 - Mouse without menus: scroll-wheel volume, single click pauses, double click full-screens,
   right click opens the track menu
+- The controls, toasts and spinner are drawn inside the window, so they no longer trail it
+  while it moves
 
 ## 0.3.7
 
