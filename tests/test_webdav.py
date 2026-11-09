@@ -6,6 +6,7 @@ import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 import pycdlib
 
@@ -125,6 +126,24 @@ class ShareTests(unittest.TestCase):
         self.assertEqual(sorted(files), sorted(DISC))
         self.assertEqual(files["Movie/BDMV/STREAM/00001.m2ts"][1], 6144)
         self.assertEqual(self.hits, [])
+
+    def test_reopening_a_share_skips_the_listing_walk(self):
+        url = self.open()
+        _, _, proxy, _, _ = media.prepare(url)
+        proxy.close()
+        with mock.patch("isoplay.media.propfind", side_effect=OSError("offline")):
+            _, kind, proxy, _, _ = media.prepare(url)  # the cached listing opens with no PROPFIND
+            self.addCleanup(proxy.close)
+            self.assertEqual(kind, "bluray")
+
+    def test_an_expired_listing_walks_again(self):
+        url = self.open()
+        _, _, proxy, _, _ = media.prepare(url)
+        proxy.close()
+        with mock.patch("isoplay.media.propfind", side_effect=OSError("offline")), \
+                mock.patch("isoplay.media.LISTING_TTL", 0):
+            with self.assertRaisesRegex(OSError, "offline"):
+                media.prepare(url)
 
     def test_a_share_without_a_disc_plays_its_largest_media_file(self):
         url = self.open({"clips/small.mkv": b"a" * 16, "clips/big.mkv": b"b" * 64, "clips/notes.txt": b"x"})
@@ -407,6 +426,33 @@ class ShareTests(unittest.TestCase):
                     b'<resourcetype><collection/></resourcetype></prop></propstat></response>'
                     b'</multistatus>')
         self.assertEqual(webdav.walk("http://host/", endless), {})
+
+    def test_read_ahead_requests_fit_the_measured_host(self):
+        class Upstream:
+            throttles, closed = 0, False
+
+            def get(self, start, end):
+                return media._Body(206, {}, bytes(end - start + 1))
+
+            def close(self):
+                pass
+
+        mib = 1 << 20
+        blocks = media.Blocks("http://host/f", size=1 << 30, upstream=Upstream(), bs=mib, streams=10)
+        self.addCleanup(blocks.close)
+        self.assertEqual(blocks.run, 4)  # RUN // bs until the host has shown what it does
+        with blocks.lock:
+            blocks.arrivals.extend([(time.monotonic(), mib) for _ in range(20)])  # 1 MB/s lately
+        blocks._tune_run()
+        self.assertEqual(blocks.run, 4)  # 1 MB/s carries 4 MB a request
+        with blocks.lock:
+            blocks.arrivals.extend([(time.monotonic(), 20 * mib) for _ in range(8)])  # and now 9 MB/s
+        blocks._tune_run()
+        self.assertEqual(blocks.run, 32)  # capped: fewer round trips at the same throughput
+        with blocks.lock:
+            blocks.arrivals.clear()  # nothing lately: back to single blocks
+        blocks._tune_run()
+        self.assertEqual(blocks.run, 1)
 
 
 if __name__ == "__main__":

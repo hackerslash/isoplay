@@ -227,6 +227,8 @@ RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs
 # How far read-ahead runs past the player: ~20 s of UHD. mpv's own readahead is shorter so a
 # start or seek is quick; this one fills in the background while it plays.
 AHEAD = 160 << 20
+RUN_SECS = 4  # transfer one read-ahead request should carry: requests stay mostly transfer
+# rather than waiting for the first byte, while a slow host keeps small runs a seek can abandon
 KEEP_RUN = 32 << 20  # read-ahead kept on disk from the start of each in-order run; past it, a film plays
 
 
@@ -241,8 +243,9 @@ class Blocks:
     sectors scattered over the whole image, and each probe waits for a whole block: on a host
     that gives ~85 KB/s per connection a 4 MiB block is ~50 s of stall, a 512 KiB one ~7 s.
     So a block a reader waits on is fetched alone, while read-ahead goes out in RUN-sized
-    requests: CDNs refuse a dozen connections at once (429, then connection refused), and a few
-    large requests carry the same throughput as many small ones.
+    requests, growing as the host proves faster (_tune_run): CDNs refuse a dozen connections
+    at once (429, then connection refused), and a few large requests carry the same throughput
+    as many small ones.
     """
     def __init__(self, url, keep=KEEP, ahead=None, size=None, pool=None, bs=None, upstream=None, background=None,
                  streams=10, memory=None):
@@ -273,6 +276,16 @@ class Blocks:
                 self.limit = max(1.0, self.limit / 2)
             elif self.starved:
                 self.limit, self.starved = min(float(self.streams), self.limit + 1 / self.limit), False
+
+    def _tune_run(self):
+        """Size read-ahead requests to the host: what it delivers in RUN_SECS, so each request
+        is mostly transfer. Learned like the connection count, from the fetches behind us."""
+        with self.lock:
+            horizon = time.monotonic() - RATE_WINDOW
+            while self.arrivals and self.arrivals[0][0] < horizon:
+                self.arrivals.popleft()
+            rate = sum(size for _, size in self.arrivals) / RATE_WINDOW
+            self.run = max(1, min(32, int(rate * RUN_SECS / self.bs)))
 
     def _get(self, start, end):
         return self.upstream.get(start, end)
@@ -311,6 +324,7 @@ class Blocks:
             self._adapt(ok and self.upstream.throttles == throttles)
             with self.lock:
                 self.arrivals.append((time.monotonic(), len(data)))
+            self._tune_run()
             parts = [data[k * self.bs:(k + 1) * self.bs] for k in range(len(futures))]
             for k, part in enumerate(parts):
                 self.memory.put((self.tag, first + k), part)
@@ -621,6 +635,41 @@ class NeedsCredentials(OSError):
     """The share refused the listing until the link carries a user name and password."""
 
 
+LISTING_TTL = 10 * 60  # a reopened share skips the PROPFIND walk while the listing is this fresh
+_listings = {}  # bare folder URL -> (walked_at, {path: (url, size)}); keyed without user:pass
+_listing_refresh, _listing_lock = set(), threading.Lock()
+
+
+def _listing(url):
+    """The share's listing, cached beside the blocks: reopening still pays no PROPFIND walk."""
+    url = url if url.endswith("/") else url + "/"
+    key = bare(url)
+    with _listing_lock:
+        hit = _listings.get(key)
+        if hit and time.monotonic() - hit[0] < LISTING_TTL:
+            if key not in _listing_refresh:  # serve the listing now, refresh it behind playback
+                _listing_refresh.add(key)
+                threading.Thread(target=_refresh_listing, args=(url, key), daemon=True).start()
+            return hit[1]
+    files = webdav.walk(url, propfind)
+    with _listing_lock:
+        _listings[key] = (time.monotonic(), files)
+    return files
+
+
+def _refresh_listing(url, key):
+    try:
+        files = webdav.walk(url, propfind)
+    except OSError:
+        pass  # the stale listing still opens; the next walk retries
+    else:
+        with _listing_lock:
+            _listings[key] = (time.monotonic(), files)
+    finally:
+        with _listing_lock:
+            _listing_refresh.discard(key)
+
+
 def propfind(url):
     """One level of a WebDAV collection, as a Multi-Status body."""
     req = Request(bare(url), method="PROPFIND", data=webdav.PROPS,
@@ -748,7 +797,7 @@ def _streamed(proxy, kind):
 
 def _share(url, disc_root):
     """A WebDAV collection: list it, project the disc on it, serve that."""
-    files = webdav.walk(url, propfind)
+    files = _listing(url)
     if not files:
         raise OSError("That share is empty")
     image = Share(files)
