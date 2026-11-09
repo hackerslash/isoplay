@@ -6,7 +6,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
     QWidgetAction,
 )
 
@@ -15,32 +15,40 @@ from isoplay.theme import BADGES, ICON, INK, OPTIONS_CSS, badge_art, svg_icon
 
 
 class Overlay(QWidget):
-    """Floating child window over the video."""
+    """A child widget over the video, so it moves with the window instead of trailing it."""
 
     def __init__(self, owner, clickable):
-        flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint
-        super().__init__(owner, flags if clickable else flags | Qt.WindowTransparentForInput)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setStyleSheet(owner.styleSheet())
-        self.anim = QPropertyAnimation(self, b"windowOpacity", self, duration=180,
+        super().__init__(owner)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not clickable)
+        self.effect = QGraphicsOpacityEffect(self, opacity=0.0)
+        self.setGraphicsEffect(self.effect)
+        self.anim = QPropertyAnimation(self.effect, b"opacity", self, duration=180,
                                        easingCurve=QEasingCurve.OutCubic)
-        self.anim.finished.connect(lambda: self.windowOpacity() < 0.01 and self.hide())
+        self.anim.finished.connect(self._settled)
+        self.hide()
         self.shown = False
+
+    def _settled(self):
+        if self.effect.opacity() < 0.01:
+            self.hide()
+        else:  # fully shown: skip the offscreen pass the effect costs on every repaint
+            self.effect.setEnabled(False)
 
     def fade(self, show):
         if show == self.shown:
             return
         self.shown = show
         self.anim.stop()
+        self.effect.setEnabled(True)
         if show:
             if not self.isVisible():
-                self.setWindowOpacity(0.0)
+                self.effect.setOpacity(0.0)
                 self.show()
+                self.raise_()
             self.anim.setDuration(140)
         else:
             self.anim.setDuration(320)
-        self.anim.setStartValue(self.windowOpacity())
+        self.anim.setStartValue(self.effect.opacity())
         self.anim.setEndValue(1.0 if show else 0.0)
         self.anim.start()
 

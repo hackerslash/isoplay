@@ -12,7 +12,7 @@ from isoplay import runtime  # noqa: F401 - points libmpv, libbluray and Java at
 import PySide6  # noqa: E402 - the diagnostics report names the Qt binding version
 
 from PySide6.QtCore import (  # noqa: E402
-    QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal, qVersion,
+    QEvent, QObject, QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal, qVersion,
 )
 from PySide6.QtGui import QAction, QActionGroup, QCursor, QKeySequence, QSurfaceFormat  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -835,7 +835,7 @@ class Player(QMainWindow):
         self.place()
 
     def place(self):
-        area = QRect(self.stack.mapToGlobal(QPoint(0, 0)), self.stack.size())
+        area = self.stack.geometry()
         w = min(520, area.width() - 40)
         self.controls.setGeometry(area.center().x() - w // 2, area.bottom() - 22 - 84, w, 84)
         top = area.top() + INSET
@@ -886,7 +886,7 @@ class Player(QMainWindow):
         active = QApplication.applicationState() == Qt.ApplicationActive and not self.isMinimized()
         on_video = self.stack.currentWidget() is self.video
         playing = self.engine.playing()
-        hovering = self.controls.isVisible() and self.controls.geometry().contains(pos)
+        hovering = self.controls.isVisible() and self.controls.geometry().contains(self.mapFromGlobal(pos))
         busy = playing or (bool(self.disc) and self.use_menus)  # a still menu reports "not playing"
         show = active and on_video and (not busy or now - self.last_move < 2.2 or hovering)
         self.controls.fade(show)
@@ -926,10 +926,6 @@ class Player(QMainWindow):
         elif now - self.stuck_at[1] > STUCK:
             self.replay_main()
             self.notice = "This disc's menu doesn't run here, so the main title is playing"
-
-    def moveEvent(self, e):
-        self.place()
-        super().moveEvent(e)
 
     def resizeEvent(self, e):
         self.place()
