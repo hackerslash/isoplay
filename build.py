@@ -99,8 +99,10 @@ def mpv_windows():
         seen.add(src.name.lower())
         shutil.copy2(src, STAGE / src.name)
         for line in subprocess.check_output(["objdump", "-p", src], text=True).splitlines():
-            if "DLL Name:" in line and (bindir / line.split(":", 1)[1].strip()).is_file():
-                queue.append(bindir / line.split(":", 1)[1].strip())
+            name = line.split(":", 1)[1].strip() if "DLL Name:" in line else None
+            found = next((d / name for d in (MPV / "bin", bindir) if name and (d / name).is_file()), None)
+            if found:
+                queue.append(found)
     print(f"bundled {len(seen)} DLLs", flush=True)
 
 

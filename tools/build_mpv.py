@@ -10,7 +10,8 @@ plays the same remote images by using libbluray/libdvdnav's block-reader callbac
 (bd_open_stream/dvdnav_open_stream); tools/mpv-stream-discs.patch adds exactly that to
 stream_bluray.c and stream_dvdnav.c.
 
-libmpv lands in build/mpv, which dev.py and build.py pick up. The BD-J jars land in
+libdvdnav is built too, with a fix for streamed discs (see dvdnav()). libmpv lands in build/mpv,
+which dev.py and build.py pick up. The BD-J jars land in
 build/libbluray, built from the libbluray mpv links against: a native 1.5.0 with a 1.4.1 jar
 makes libbluray disable BD-J and play the main title.
 
@@ -34,11 +35,52 @@ MPV_BUILD = BUILD / "mpv-build"
 PREFIX = BUILD / "mpv"
 PATCH = ROOT / "tools" / "mpv-stream-discs.patch"
 VERSION = "v0.42.0"
+DVDNAV = "7.0.0"
 
 
 def run(*cmd, **kw):
     print("+", " ".join(map(str, cmd)), flush=True)
     subprocess.run(cmd, check=True, **kw)
+
+
+def fetch(name, version):
+    """VideoLAN's release tarball of name-version, unpacked into build/."""
+    src = BUILD / f"{name}-{version}"
+    if src.is_dir():
+        return src
+    for ext in ("xz", "bz2"):  # releases before 1.3.4 or so ship only .tar.bz2
+        archive = BUILD / f"{name}-{version}.tar.{ext}"
+        url = f"https://download.videolan.org/pub/videolan/{name}/{version}/{archive.name}"
+        print("+ download", url, flush=True)
+        try:
+            urllib.request.urlretrieve(url, archive)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or ext == "bz2":
+                raise
+    with tarfile.open(archive) as tar:
+        tar.extractall(BUILD, filter="data")
+    return src
+
+
+def dvdnav():
+    """libdvdnav into build/mpv, fixed: restarting a stopped VM (a title's end, a menu's Stop)
+    wipes the read callbacks of a disc opened on a stream, and the next read seeks through
+    NULL. A crash with libdvdread's own reader, a stream of seek errors with libdvdcss's."""
+    src = fetch("libdvdnav", DVDNAV)
+    vm = src / "src/vm/vm.c"
+    text = vm.read_text()
+    wipe = "  else\n      vm->streamcb = (dvdnav_stream_cb) { NULL, NULL, NULL };"
+    keep = "  else if(dvdroot)  /* a restart keeps the stream it was opened on */\n" \
+           "      vm->streamcb = (dvdnav_stream_cb) { NULL, NULL, NULL };"
+    if wipe in text:
+        vm.write_text(text.replace(wipe, keep))
+    elif keep not in text:
+        raise SystemExit(f"libdvdnav {DVDNAV} no longer matches the stream-callback fix; recheck vm_reset")
+    build = BUILD / "dvdnav-build"
+    if not (build / "build.ninja").exists():
+        run("meson", "setup", build, src, "--buildtype=release", f"--prefix={PREFIX}", "--libdir=lib")
+    run("ninja", "-C", build, "install")
 
 
 def mpv():
@@ -53,7 +95,9 @@ def mpv():
     else:
         run("git", "-C", str(SRC), "apply", str(PATCH))
     if not (MPV_BUILD / "build.ninja").exists():
-        run("meson", "setup", MPV_BUILD, SRC, "--buildtype=release", f"--prefix={PREFIX}", "--libdir=lib",
+        # rpath: the libdvdnav beside it, for a build used in place (dev.py, LIBMPV_PATH, CI tests)
+        rpath = [] if sys.platform == "win32" else [f"-Dc_link_args=-Wl,-rpath,{PREFIX / 'lib'}"]
+        run("meson", "setup", MPV_BUILD, SRC, "--buildtype=release", f"--prefix={PREFIX}", "--libdir=lib", *rpath,
             "-Dlibmpv=true", "-Dcplayer=false", "-Ddvdnav=enabled",
             "-Dlibbluray=enabled", "-Dlibcurl=enabled", "-Dlua=disabled", "-Djavascript=disabled", "-Dvapoursynth=disabled",
             "-Dlibarchive=disabled", "-Drubberband=disabled", "-Dmanpage-build=disabled")
@@ -65,21 +109,8 @@ def bdj_jar():
     """libbluray wants a jar built from its own version; Homebrew installs none at all."""
     version = subprocess.run(["pkg-config", "--modversion", "libbluray"],
                              capture_output=True, text=True, check=True).stdout.strip()
-    src = BUILD / f"libbluray-{version}"
+    src = fetch("libbluray", version)
     dist = BUILD / "libbluray"
-    if not (src / "src/libbluray/bdj/build.xml").exists():
-        for ext in ("xz", "bz2"):  # releases before 1.3.4 or so ship only .tar.bz2
-            archive = BUILD / f"libbluray-{version}.tar.{ext}"
-            url = f"https://download.videolan.org/pub/videolan/libbluray/{version}/{archive.name}"
-            print("+ download", url, flush=True)
-            try:
-                urllib.request.urlretrieve(url, archive)
-                break
-            except urllib.error.HTTPError as e:
-                if e.code != 404 or ext == "bz2":
-                    raise
-        with tarfile.open(archive) as tar:
-            tar.extractall(BUILD, filter="data")
     shutil.rmtree(dist, ignore_errors=True)
     # A file, not -D arguments: Windows' ant.bat splits "-Dsrc_awt=:java-j2se:..." into a target
     props = {"build": (BUILD / "bdj-build").as_posix(), "dist": dist.as_posix(), "bootclasspath": "",
@@ -96,6 +127,9 @@ def main():
     BUILD.mkdir(exist_ok=True)
     if sys.platform == "darwin":
         os.environ.setdefault("PKG_CONFIG_PATH", "/opt/homebrew/lib/pkgconfig")
+    os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(filter(None, (str(PREFIX / "lib/pkgconfig"),
+                                                                  os.environ.get("PKG_CONFIG_PATH"))))
+    dvdnav()
     mpv()
     bdj_jar()
 
