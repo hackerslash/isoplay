@@ -1,12 +1,13 @@
 """MpvEngine behaviour without libmpv: methods are called unbound on a stub player."""
+import collections
 import os
 import unittest
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QMouseEvent  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from isoplay.mpv import MpvEngine, end_to_event, track_entries, track_label  # noqa: E402
@@ -83,12 +84,20 @@ class _Player:
     def command(self, *args):
         self.commands.append(args)
 
+    def command_async(self, *args):  # the engine's writes: `set` lands in _set like an option write
+        if args[0] == "set":
+            self.__setitem__(args[1], args[2])
+        else:
+            self.commands.append(args)
+
 
 def _unbound(**props):
     import queue as _queue
     import threading as _threading
     engine = MpvEngine.__new__(MpvEngine)
-    engine.player = _Player(**props)
+    engine.player = _Player()
+    engine.state = dict(props)  # what mpv's property observers would have pushed
+    engine.log = collections.deque(maxlen=500)
     engine._mouse_lock = _threading.Lock()  # hover queue, like __init__ but with no worker
     engine._mouse_queue = _queue.Queue()
     engine._mouse_gen = 0
@@ -126,11 +135,11 @@ class MpvPropertiesTests(unittest.TestCase):
     def test_each_fit_mode_touches_its_own_levers(self):
         engine = _unbound()[0]
         MpvEngine.set_fit(engine, "fill", 800, 400)
-        self.assertEqual(engine.player._set, {"video_aspect_override": "no", "panscan": 1.0})
+        self.assertEqual(engine.player._set, {"video-aspect-override": "no", "panscan": "1.0"})
         MpvEngine.set_fit(engine, "fit", 800, 400)
-        self.assertEqual(engine.player._set, {"video_aspect_override": "no", "panscan": 0.0})
+        self.assertEqual(engine.player._set, {"video-aspect-override": "no", "panscan": "0.0"})
         MpvEngine.set_fit(engine, "stretch", 800, 400)
-        self.assertEqual(engine.player._set, {"video_aspect_override": "800:400", "panscan": 0.0})
+        self.assertEqual(engine.player._set, {"video-aspect-override": "800:400", "panscan": "0.0"})
 
     def test_tracks_read_off_the_property_list(self):
         engine = _unbound(track_list=[{"type": "audio", "id": 1, "lang": "eng", "selected": True}],
@@ -209,8 +218,8 @@ class MpvBufferTests(unittest.TestCase):
         engine.emit = events.append
         engine._cache_state, engine._stalled, engine._seeking = None, False, False
         MpvEngine._observe(engine)
-        self.assertEqual(set(player.observed),
-                         {"paused-for-cache", "cache-buffering-state", "seeking", "video-format"})
+        self.assertLessEqual({"paused-for-cache", "cache-buffering-state", "seeking", "video-format"},
+                             set(player.observed))
         return engine, player, events
 
     def fire(self, player, name, value):
@@ -374,6 +383,103 @@ class MpvMouseTests(unittest.TestCase):
         self.assertEqual(E.video_rect(engine2, 1120, 630), (0.0, 0.0, 1120.0, 630.0))
         self.assertEqual(E.video_rect(_unbound()[0], 1120, 630),  # nothing playing yet
                          (0.0, 0.0, 1120.0, 630.0))
+
+
+
+class MpvNonBlockingTests(unittest.TestCase):
+    """The Qt thread never waits on mpv's core: a disc seek over a slow link holds it for seconds."""
+
+    def test_reads_come_from_pushed_state_and_writes_are_queued(self):
+        engine, player = _unbound(time_pos=12.5, duration=60.0, core_idle=False, pause=False, playlist_count=1)
+        player.command = None  # any synchronous command would now raise
+        self.assertEqual((engine.time(), engine.length(), engine.playing(), engine.has_media()), (12500, 60000, True, True))
+        MpvEngine.pause(engine)
+        MpvEngine.pause(engine)  # a second press before mpv confirms toggles back
+        MpvEngine.select_track(engine, "sub", 3)
+        MpvEngine.seek(engine, 5000)
+        MpvEngine.navigate(engine, "select")
+        self.assertEqual(player._set["pause"], "no")
+        self.assertEqual(player._set["sid"], "3")
+        self.assertIn(("seek", "5.000", "absolute"), player.commands)
+        self.assertIn(("discnav", "select"), player.commands)
+
+    def test_a_start_position_rides_on_loadfile(self):
+        engine, player = _unbound()
+        MpvEngine.open(engine, "/films/a.mkv", start=12.5)
+        self.assertEqual(player.commands[-1], ("loadfile", "/films/a.mkv", "replace", -1, "start=12.500"))
+
+    def test_languages_and_passthrough(self):
+        engine, player = _unbound()
+        MpvEngine.set_languages(engine, "en,eng", "no")
+        self.assertEqual((player._set["alang"], player._set["slang"], player._set["sid"]), ("en,eng", "", "no"))
+        MpvEngine.set_languages(engine, "", "ja,jpn")
+        self.assertEqual((player._set["alang"], player._set["slang"], player._set["sid"]), ("", "ja,jpn", "auto"))
+        MpvEngine.set_passthrough(engine, True)
+        self.assertIn("truehd", player._set["audio-spdif"])
+        MpvEngine.set_passthrough(engine, False)
+        self.assertEqual(player._set["audio-spdif"], "")
+
+    def test_a_missing_option_in_set_languages_does_not_raise(self):
+        engine, player = _unbound()
+        original = _Player.command_async
+
+        def fail_once(self, *args):
+            if args[:2] == ("set", "sid"):
+                raise RuntimeError("no such option")
+            original(self, *args)
+
+        _Player.command_async = fail_once
+        try:
+            MpvEngine.set_languages(engine, "en,eng", "no")  # must not raise
+        finally:
+            _Player.command_async = original
+        self.assertEqual((player._set["alang"], player._set["slang"]), ("en,eng", ""))
+        self.assertNotIn("sid", player._set)  # the failure only reached the log ring
+        self.assertIn("set sid failed", "\n".join(engine.log))
+
+    def test_the_log_tail_hides_credentials(self):
+        engine, _ = _unbound()
+        engine.log.append("[info] cplayer: Playing: https://user:pw@host/x.iso")
+        self.assertEqual(MpvEngine.log_tail(engine), "[info] cplayer: Playing: https://***@host/x.iso")
+
+
+class MpvWidgetSignalTests(unittest.TestCase):
+    def widget(self, menu=False):
+        from isoplay.mpv import MpvVideoWidget
+        QApplication.instance() or QApplication([])
+        engine = Mock()
+        engine.menu_active.return_value = menu
+        engine.video_rect.return_value = (0.0, 0.0, 200.0, 100.0)
+        widget = MpvVideoWidget(engine, None)
+        widget.resize(200, 100)
+        seen = []
+        for name in ("clicked", "double_clicked", "context_requested", "wheeled"):
+            getattr(widget, name).connect(lambda *a, n=name: seen.append((n, *a)))
+        return widget, engine, seen
+
+    def press(self, widget, button, kind=QEvent.Type.MouseButtonPress):
+        event = QMouseEvent(kind, QPointF(50, 25), QPointF(320, 240), button, button, Qt.NoModifier)
+        (widget.mouseDoubleClickEvent if kind == QEvent.Type.MouseButtonDblClick else widget.mousePressEvent)(event)
+
+    def test_clicks_go_to_the_app_unless_a_menu_takes_them(self):
+        widget, engine, seen = self.widget()
+        self.press(widget, Qt.LeftButton)
+        self.assertEqual(seen, [("clicked",)])
+        widget, engine, seen = self.widget(menu=True)
+        self.press(widget, Qt.LeftButton)
+        self.assertEqual(seen, [])
+        engine.menu_mouse.assert_called_once()
+
+    def test_right_double_and_wheel(self):
+        widget, _, seen = self.widget()
+        self.press(widget, Qt.RightButton)
+        self.press(widget, Qt.LeftButton, QEvent.Type.MouseButtonDblClick)
+        for _ in range(2):  # half notches from a trackpad add up to one step
+            widget.wheelEvent(QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(), QPoint(0, 60), Qt.NoButton,
+                                          Qt.NoModifier, Qt.NoScrollPhase, False))
+        self.assertEqual([s[0] for s in seen], ["context_requested", "double_clicked", "wheeled"])
+        self.assertEqual(seen[0], ("context_requested", QPoint(320, 240)))  # the global point
+        self.assertEqual(seen[-1], ("wheeled", 1))
 
 
 if __name__ == "__main__":

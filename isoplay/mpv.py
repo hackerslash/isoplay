@@ -5,15 +5,17 @@ Video is drawn by MpvRenderContext into a QOpenGLWidget, so it is an ordinary Qt
 mouse events reach it. Menu positions go to discnav normalized 0..1 against the drawn picture;
 the `mouse` command's mouse-pos is in OSD units, so pixels would misland.
 """
+import collections
 import ctypes
 import ctypes.util
 import os
 import queue
+import re
 import sys
 import threading
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -146,27 +148,39 @@ OPTIONS = {
 }
 
 
+# Polled by the app every tick. Read from values mpv pushes, never by asking it: a get blocks
+# until mpv's core is free, and a disc seek over a slow link holds the core for seconds.
+STATE = ("time-pos", "duration", "percent-pos", "core-idle", "pause", "mute", "disc-menu-active", "seeking",
+         "chapters", "chapter", "track-list", "aid", "sid", "playlist-count", "video-params")
+SPDIF = "ac3,eac3,dts,dts-hd,truehd"
+USERINFO = re.compile(r"(://)[^/\s@]+@")
+
+
 class MpvEngine:
     _fit = "fit"
 
     def __init__(self):
         self.mpv = binding()
-        options = dict(config="no", vo="libmpv", idle="yes", keep_open="no",
-                       input_default_bindings="no", save_watch_history="no", user_agent=UA,
-                       hwdec="auto-safe")
+        self.log = collections.deque(maxlen=500)
         debug = os.environ.get("ISOPLAY_DEBUG")
-        if debug:
-            options["loglevel"] = "verbose" if debug == "verbose" else "info"
-            options["log_handler"] = lambda level, prefix, text: print(
-                f"[mpv {level} {prefix}] {text.strip()}", flush=True)
-        self.player = self.mpv.MPV(**options)
+
+        def log(level, prefix, text):
+            self.log.append(f"[{level}] {prefix}: {text.rstrip()}")
+            if debug:
+                print(f"[mpv {level} {prefix}] {text.strip()}", flush=True)
+
+        self.player = self.mpv.MPV(config="no", vo="libmpv", idle="yes", keep_open="no",
+                                   input_default_bindings="no", save_watch_history="no", user_agent=UA,
+                                   hwdec="auto-safe", loglevel="verbose" if debug == "verbose" else "info",
+                                   log_handler=log)
+        self._version = self.player.mpv_version
         if self.player.mpv_version_tuple < (0, 42, 0):
-            version = self.player.mpv_version
             self.player.terminate()
-            raise SystemExit(f"the mpv engine needs mpv 0.42.0 or newer for disc menus; {version} is installed.")
+            raise SystemExit(f"the mpv engine needs mpv 0.42.0 or newer for disc menus; {self._version} is installed.")
         self.video_widget = None
         self.render_context = None
         self.emit = None
+        self.state = {}
         self._vout = False
         self._cache_state = None
         self._stalled = False  # paused-for-cache
@@ -195,8 +209,17 @@ class MpvEngine:
             try:
                 self.player[name] = value
             except Exception as e:  # noqa: BLE001 - an older or newer libmpv without this option
-                if os.environ.get("ISOPLAY_DEBUG"):
-                    print(f"[mpv-engine] option {name} not applied: {e!r}", flush=True)
+                self.log.append(f"[engine] option {name} not applied: {e!r}")
+
+    def _send(self, *args):
+        """A command or `set`, queued without waiting for mpv's core, in order with the others."""
+        try:
+            self.player.command_async(*args)
+        except Exception as e:  # noqa: BLE001 - rejected outright, e.g. nothing loaded
+            self.log.append(f"[engine] {args[0]} {args[1] if len(args) > 1 else ''} failed: {e!r}")
+
+    def _set(self, name, value):
+        self._send("set", name, value if isinstance(value, str) else str(value))
 
     def _report(self):
         """One buffering state from three flags: seeking or stalled means waiting for data,
@@ -211,6 +234,9 @@ class MpvEngine:
 
     def _observe(self):
         player = self.player
+
+        def _state(name, value):
+            self.state[name.replace("-", "_")] = value
 
         def _stalled(name, value):
             self._stalled = bool(value)
@@ -228,6 +254,7 @@ class MpvEngine:
                 self._report()
 
         def _seeking(name, value):
+            _state(name, value)
             self._seeking = bool(value)
             self._report()
 
@@ -236,6 +263,9 @@ class MpvEngine:
                 self._vout = True
                 self._emit("vout")
 
+        for name in STATE:
+            if name != "seeking":
+                player.observe_property(name, _state)
         player.observe_property("paused-for-cache", _stalled)
         player.observe_property("cache-buffering-state", _cache)
         player.observe_property("seeking", _seeking)
@@ -247,6 +277,12 @@ class MpvEngine:
 
     def set_bridge(self, emit):
         self.emit = emit
+
+    def version(self):
+        return self._version
+
+    def log_tail(self):
+        return USERINFO.sub(r"\1***@", "\n".join(self.log))
 
     # --- build and the widget video is drawn in -----------------------------------------------------
 
@@ -294,136 +330,121 @@ class MpvEngine:
 
     # --- media ---------------------------------------------------------------------------------------
 
-    def open(self, mrl, kind=None, menus=True):
+    def open(self, mrl, kind=None, menus=True, start=0):
         self._vout = False
         self._stalled = self._seeking = False
         self._cache_state = None
-        player = self.player
-        player.pause = False
+        self.state.clear()
+        self._set("pause", "no")
         if kind in ("dvd", "bluray"):
-            player["disc-menu"] = "yes" if menus else "no"
+            self._set("disc-menu", "yes" if menus else "no")
             # A loopback URL as the device needs the patched libmpv (tools/build_mpv.py).
-            if kind == "bluray":
-                player["bluray-device"] = mrl
-                target = "bd://"
-            else:
-                player["dvd-device"] = mrl
-                target = "dvd://"
+            self._set("bluray-device" if kind == "bluray" else "dvd-device", mrl)
+            target = "bd://" if kind == "bluray" else "dvd://"
         else:
             target = mrl
-        player.command("loadfile", target, "replace")
+        if start > 0:
+            self._send("loadfile", target, "replace", -1, f"start={start:.3f}")
+        else:
+            self._send("loadfile", target, "replace")
 
     def close(self):
-        self.player.command("stop")
+        self._send("stop")
 
     def has_media(self):
-        try:
-            return bool(self.player.playlist_count)
-        except Exception:  # noqa: BLE001 - unavailable before anything loaded
-            return False
+        return bool(self.state.get("playlist_count"))
 
     # --- state ---------------------------------------------------------------------------------------
 
     def playing(self):
-        try:
-            return not self.player.core_idle
-        except Exception:  # noqa: BLE001
-            return False
+        return self.state.get("core_idle") is False
 
     def _seconds(self, name):
-        try:
-            value = getattr(self.player, name.replace("-", "_"))
-        except Exception:  # noqa: BLE001 - nothing loaded, or a menu edition has no estimate
-            return 0.0
-        # an idle player answers None, not an exception, and menu editions report -1
+        value = self.state.get(name)
+        # an idle player has None, and menu editions report -1
         return float(value) if isinstance(value, (int, float)) and value >= 0 else 0.0
 
     def time(self):
-        return int(self._seconds("time-pos") * 1000)
+        return int(self._seconds("time_pos") * 1000)
 
     def length(self):
         return int(self._seconds("duration") * 1000)
 
     def position(self):
-        try:
-            value = self.player.percent_pos
-        except Exception:  # noqa: BLE001
-            return -1.0
+        value = self.state.get("percent_pos")
         return value / 100.0 if isinstance(value, (int, float)) else -1.0
 
     def menu_active(self):
-        try:
-            return bool(self.player.disc_menu_active)
-        except Exception:  # noqa: BLE001 - unset while nothing plays
-            return False
+        return bool(self.state.get("disc_menu_active"))
 
     def seeking(self):
-        try:
-            return bool(self.player.seeking)
-        except Exception:  # noqa: BLE001 - unset while nothing plays
-            return False
+        return bool(self.state.get("seeking"))
 
     # --- transport -----------------------------------------------------------------------------------
 
     def pause(self):
-        self.player.pause = not bool(self.player.pause)
+        paused = not self.state.get("pause")
+        self.state["pause"] = paused  # until mpv confirms, so a quick second press toggles back
+        self._set("pause", "yes" if paused else "no")
 
     def seek(self, ms):
-        self.player.command("seek", ms / 1000.0, "absolute")
+        self._send("seek", f"{ms / 1000.0:.3f}", "absolute")
 
     def set_position(self, fraction):
-        self.player.command("seek", fraction * 100, "absolute-percent")
+        self._send("seek", f"{fraction * 100:.3f}", "absolute-percent")
 
     def step_chapter(self, d):
-        self.player.command("add", "chapter", d)
+        self._send("add", "chapter", str(d))
 
     def chapter_count(self):
-        try:
-            return self.player.chapters or 0
-        except Exception:  # noqa: BLE001
-            return 0
+        return self.state.get("chapters") or 0
 
     def chapter(self):
-        try:
-            return max(0, self.player.chapter)
-        except Exception:  # noqa: BLE001
-            return 0
+        return max(0, self.state.get("chapter") or 0)
 
     def set_volume(self, value):
-        self.player.volume = value
+        self._set("volume", int(value))
 
     def toggle_mute(self):
-        self.player.mute = not bool(self.player.mute)
-        return bool(self.player.mute)
+        muted = not self.state.get("mute")
+        self.state["mute"] = muted
+        self._set("mute", "yes" if muted else "no")
+        return muted
 
     # --- tracks -----------------------------------------------------------------------------------------
 
     def tracks(self):
-        items = self.player.track_list or ()
+        items = self.state.get("track_list") or ()
         return {"audio": track_entries(items, "audio", self._currently("aid")),
                 "sub": track_entries(items, "sub", self._currently("sid"))}
 
     def _currently(self, prop):
-        try:
-            value = getattr(self.player, prop)
-        except Exception:  # noqa: BLE001
-            return -1
-        # "no" means Off and None means nothing loaded; neither is a track id to hand back
-        return value if isinstance(value, int) else -1
+        value = self.state.get(prop)
+        # "no"/False means Off and None means nothing loaded; neither is a track id to hand back
+        return value if isinstance(value, int) and not isinstance(value, bool) else -1
 
     def select_track(self, kind, tid):
-        self.player["aid" if kind == "audio" else "sid"] = "no" if tid == -1 else tid
+        self._set("aid" if kind == "audio" else "sid", "no" if tid == -1 else tid)
 
     def subtitles(self, uri):
-        self.player.command("sub-add", uri, "select")
+        self._send("sub-add", uri, "select")
         return True
+
+    def set_languages(self, audio, sub):
+        """Comma lists of ISO 639 codes, "" for the file's own default; sub "no" starts with none."""
+        self._set("alang", audio)
+        self._set("slang", "" if sub == "no" else sub)
+        self._set("sid", "no" if sub == "no" else "auto")
+
+    def set_passthrough(self, on):
+        self._set("audio-spdif", SPDIF if on else "")
 
     # --- appearance ------------------------------------------------------------------------------------
 
     def set_fit(self, mode, width, height):
         self._fit = mode
-        self.player.video_aspect_override = f"{max(width, 1)}:{max(height, 1)}" if mode == "stretch" else "no"
-        self.player.panscan = 1.0 if mode == "fill" else 0.0
+        self._set("video-aspect-override", f"{max(width, 1)}:{max(height, 1)}" if mode == "stretch" else "no")
+        self._set("panscan", "1.0" if mode == "fill" else "0.0")
 
     # --- disc menus ------------------------------------------------------------------------------------
 
@@ -432,11 +453,8 @@ class MpvEngine:
         fit letterboxes it, fill crops the overflow, stretch distorts it edge to edge. Mouse
         positions map against this rect, not the widget, so clicks on the bars never reach
         the disc and 4:3 menus in a wide window still land."""
-        try:
-            params = self.player.video_params or {}
-            vw, vh = params.get("dw") or params.get("w"), params.get("dh") or params.get("h")
-        except Exception:  # noqa: BLE001 - nothing is playing yet
-            vw = vh = None
+        params = self.state.get("video_params") or {}
+        vw, vh = params.get("dw") or params.get("w"), params.get("dh") or params.get("h")
         if not vw or not vh or not width or not height:
             return 0.0, 0.0, float(max(1, width)), float(max(1, height))
         if self._fit == "stretch":
@@ -446,10 +464,7 @@ class MpvEngine:
         return (width - dw) / 2, (height - dh) / 2, dw, dh
 
     def navigate(self, action):
-        try:
-            self.player.command("discnav", action)
-        except Exception:  # noqa: BLE001 - no disc menu to navigate
-            pass
+        self._send("discnav", action)
 
     def menu_mouse_async(self, x, y):
         with self._mouse_lock:
@@ -463,21 +478,22 @@ class MpvEngine:
         no-ops on discs where its lookup misses (mpv reports success regardless), while
         select on the hovered button is the path keyboard navigation proves every time."""
         position = f"{max(0.0, min(1.0, x)):.4f}", f"{max(0.0, min(1.0, y)):.4f}"
-        try:
-            if click:
-                with self._mouse_lock:  # queued hovers older than this are now stale
-                    self._mouse_gen += 1
-            self.player.command("discnav", "mouse-move", *position)
-            if click:
-                self.player.command("discnav", "select")
-        except Exception:  # noqa: BLE001 - the menu went away
-            pass
+        if click:
+            with self._mouse_lock:  # queued hovers older than this are now stale
+                self._mouse_gen += 1
+        self._send("discnav", "mouse-move", *position)
+        if click:
+            self._send("discnav", "select")
 
 
 class MpvVideoWidget(QOpenGLWidget):
     """Draws mpv's frames into the Qt window itself, so mouse events reach disc menus."""
 
     frame_ready = Signal()
+    clicked = Signal()
+    double_clicked = Signal()
+    context_requested = Signal(QPoint)
+    wheeled = Signal(int)
 
     def __init__(self, engine, parent):
         super().__init__(parent)
@@ -485,6 +501,7 @@ class MpvVideoWidget(QOpenGLWidget):
         self.setMouseTracking(True)  # hover must reach disc menus with no button held
         self._gl_ref = None  # the ctypes callback has to outlive initializeGL's scope
         self._last_mouse = (0.0, 0.0, 0.0)  # last forwarded position and when: moves coalesce
+        self._wheel = 0  # trackpads send fractions of a notch
         self.frame_ready.connect(self.update, Qt.ConnectionType.QueuedConnection)
 
     def initializeGL(self):
@@ -519,8 +536,25 @@ class MpvVideoWidget(QOpenGLWidget):
         self._menu_mouse(event, click=False)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self.context_requested.emit(event.globalPosition().toPoint())
+        elif event.button() == Qt.LeftButton:
+            if self.engine.menu_active():
+                self._menu_mouse(event, click=True)
+            else:
+                self.clicked.emit()
+
+    def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self._menu_mouse(event, click=True)
+            self.double_clicked.emit()
+
+    def wheelEvent(self, event):
+        self._wheel += event.angleDelta().y()
+        steps = int(self._wheel / 120)
+        if steps:
+            self._wheel -= steps * 120
+            self.wheeled.emit(steps)
+        event.accept()
 
     def _menu_mouse(self, event, click):
         if not self.engine.menu_active():
@@ -542,5 +576,5 @@ class MpvVideoWidget(QOpenGLWidget):
                 return
             self._last_mouse = (nx, ny, now)
             self.engine.menu_mouse_async(nx, ny)
-        else:  # clicks stay synchronous: the move and the select must keep their order
+        else:  # queued in order: the move lands before the select
             self.engine.menu_mouse(nx, ny, click)
