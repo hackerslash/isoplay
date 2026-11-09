@@ -91,7 +91,9 @@ jobs:
         if: failure() && runner.os == 'Linux'
         run: |
           sudo apt-get install -y --no-install-recommends gdb
-          gdb -batch -ex run -ex "thread apply all bt 25" --args python -m unittest tests.test_playback 2>&1 | grep -v "^\[" | tail -200
+          gdb -batch -ex run -ex "bt 60" -ex "info sharedlibrary" --args python -m unittest tests.test_playback 2>&1 \
+            | grep -v "^\[" | grep -E "^#|signal|dvd|bluray|libmpv|avformat" | head -120
+          ldconfig -p | grep -E "dvdread|dvdnav"
       - uses: actions/upload-artifact@v4
         with:
           name: isoplay-${{ runner.os }}
