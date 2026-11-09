@@ -61,6 +61,7 @@ BLOCK = 512 << 10
 SERVE_CAP = 16 << 20  # most to answer one range with; players ask for the whole rest
 SNIFF_DISC = 4 << 20  # how far in to look for BDMV/VIDEO_TS, independent of the block size
 REDIRECTS = {301, 302, 303, 307, 308}
+TRANSIENT = {429, 502, 503, 504}  # throttled, or a host failing over mid-play; worth another try
 
 
 class _Body(io.BytesIO):
@@ -111,7 +112,7 @@ class Upstream:
 
     def get(self, start, end):
         """One byte range, read in full so the connection is ready for the next block."""
-        for attempt in range(3):
+        for attempt in range(4):
             if self.closed:  # read-ahead still queued when playback stopped; don't keep retrying it
                 raise OSError("the stream was closed")
             connection, url = self._connection()
@@ -131,8 +132,9 @@ class Upstream:
                     raise
                 trace(f"upstream {start}-{end} attempt {attempt + 1} failed: {e!r}")
                 self._drop()
-                if attempt == 2:
+                if attempt == 3:
                     raise
+                time.sleep(2 ** attempt)  # a flapping host is usually back in a second or two
                 continue
             if response.status == 200:
                 self._drop()  # the rest of the body is still pending, so the connection is spent
@@ -144,13 +146,16 @@ class Upstream:
                 continue
             if response.will_close:
                 self._drop()
-            if response.status == 429 and attempt < 2:  # a CDN throttling a burst; it clears in seconds
-                trace(f"upstream {start}-{end} throttled (429), retrying")
+            if response.status in TRANSIENT and attempt < 3:
+                # The error page may still be pending, so this connection is spent.
+                self._drop()
                 self.throttles += 1
+                trace(f"upstream {start}-{end} answered {response.status}, retrying")
                 wait = response.getheader("Retry-After", "")
                 time.sleep(min(int(wait), 10) if wait.isdigit() else 2 ** attempt)
                 continue
             if response.status >= 400:  # urlopen raised these; http.client hands back the error page
+                self._drop()
                 raise OSError(f"the server answered {response.status} {response.reason}")
             return _Body(response.status, response.headers, data)
         raise OSError("the server kept redirecting the disc image")

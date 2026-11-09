@@ -252,6 +252,90 @@ class ShareTests(unittest.TestCase):
             self.assertEqual(r.read(), b"data")
         self.assertEqual(upstream.throttles, 1)
 
+    def test_a_failing_over_host_is_retried_and_counted(self):
+        answers = [503, 502, 206]
+
+        class Failover(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                status = answers.pop(0)
+                self.send_response(status)
+                if status == 206:
+                    self.send_header("Content-Range", "bytes 0-3/4")
+                    self.send_header("Content-Length", "4")
+                    self.end_headers()
+                    self.wfile.write(b"data")
+                    return
+                self.send_header("Retry-After", "0")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Failover)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = media.Upstream(f"http://127.0.0.1:{server.server_port}/f")
+        self.addCleanup(upstream.close)
+        with upstream.get(0, 3) as r:
+            self.assertEqual(r.read(), b"data")
+        self.assertEqual(upstream.throttles, 2)
+
+    def test_a_dead_host_stays_an_error(self):
+        class Gone(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(500)
+                self.send_header("Content-Length", "5")
+                self.end_headers()
+                self.wfile.write(b"oops!")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Gone)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = media.Upstream(f"http://127.0.0.1:{server.server_port}/f")
+        self.addCleanup(upstream.close)
+        with self.assertRaisesRegex(OSError, "500"):
+            upstream.get(0, 3)
+
+    def test_an_error_page_does_not_poison_the_next_range(self):
+        answers = [404, 206]
+
+        class Flaky(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                status = answers.pop(0)
+                self.send_response(status)
+                body = b"missing" if status == 404 else b"data"
+                if status == 206:
+                    self.send_header("Content-Range", "bytes 0-3/4")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = media.Upstream(f"http://127.0.0.1:{server.server_port}/f")
+        self.addCleanup(upstream.close)
+        with self.assertRaisesRegex(OSError, "404"):
+            upstream.get(0, 3)
+        with upstream.get(0, 3) as r:  # the 404's body must not leak into this range
+            self.assertEqual(r.read(), b"data")
+
     def test_a_closed_stream_stops_without_touching_the_network(self):
         upstream = media.Upstream("http://127.0.0.1:1/f")  # nothing listens here
         upstream.close()

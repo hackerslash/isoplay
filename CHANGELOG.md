@@ -9,6 +9,9 @@
   BD-J jars built for the bundled libbluray
 - mpv's cache, readahead and FFmpeg reconnects are tuned for network play, and seeks show the
   buffering spinner while the picture is frozen
+- The upstream survives flaky hosts: 429/502/503/504 are retried with backoff (honouring
+  Retry-After), connection drops back off instead of hammering, and an error page never
+  poisons the connection the next range reuses
 
 ## 0.3.7
 
