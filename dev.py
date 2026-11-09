@@ -3,12 +3,10 @@
 
     python dev.py              start the app
     python dev.py <file|url>   start it on something
-    python dev.py --mpv [...]  start it under the mpv engine (futureplan item 1's prototype)
     python dev.py --tests      run the test suite
 
-Creates .venv on first use and keeps it in step with requirements.txt. Neither libVLC nor
-libmpv is a Python package, so the libraries the chosen engine needs come from the system;
---mpv wants mpv 0.42.0 or newer, the first to bring disc menus back."""
+Creates .venv on first use and keeps it in step with requirements.txt. libmpv 0.42+ comes from
+tools/build_mpv.py (build/mpv, needed for remote discs) or else the system."""
 import os
 import subprocess
 import sys
@@ -19,15 +17,8 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 PYTHON = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 INSTALLED = VENV / "requirements.installed"
-VLC_HELP = """isoplay needs VLC installed, which provides libVLC.
-  macOS    brew install --cask vlc
-  Windows  winget install VideoLAN.VLC
-  Linux    sudo apt install vlc        (or your distribution's package)"""
-MPV_HELP = """the mpv engine needs libmpv, mpv 0.42.0 or newer for its disc menus.
-  macOS    brew upgrade mpv | brew install mpv
-  Windows  put libmpv-2.dll next to run.py (mpv-player-windows/libmpv)
-  Linux    sudo apt install libmpv2     (or install mpv)
-If more than one libmpv is installed, point LIBMPV_PATH at the exact dylib/dll."""
+MPV_HELP = """isoplay needs libmpv 0.42.0 or newer: run python tools/build_mpv.py (remote discs
+need its patch), or install mpv and point LIBMPV_PATH at the library if it isn't found."""
 
 
 def main():
@@ -41,31 +32,15 @@ def main():
     if sys.argv[1:2] == ["--tests"]:
         return subprocess.run([PYTHON, "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT).returncode
 
-    env = java_env()
-    args = list(sys.argv[1:])
-    if "--mpv" in args:
-        args.remove("--mpv")
-        env = {**(env or os.environ), "ISOPLAY_ENGINE": "mpv"}
-        jars = sorted((ROOT / "build/vlc/plugins").glob("libbluray-j2se-*.jar"))
-        built = sorted((ROOT / "build/libbluray").glob("libbluray-j2se-*.jar"))
-        if built and not env.get("LIBBLURAY_CP"):
-            # A jar built for the system's libbluray version; the VLC one is only a fallback,
-            # and libbluray refuses BD-J when the pair doesn't match. Trailing "/" asks
-            # libbluray to find the main and awt jars by name in that directory.
-            env["LIBBLURAY_CP"] = str(ROOT / "build/libbluray") + "/"
-        elif jars and not env.get("LIBBLURAY_CP"):
-            # Homebrew's libbluray is built with BD-J but installs no jar where it looks; the
-            # bundled one is what its Java classes need to exist at all.
-            env["LIBBLURAY_CP"] = str(jars[-1])
-        built = sorted((ROOT / "build/mpv/lib").glob("libmpv*"))
-        if built and not env.get("LIBMPV_PATH"):
-            env["LIBMPV_PATH"] = str(built[0])  # the patched build: stream discs need its reader
-        if subprocess.run([PYTHON, "-c", "from isoplay.mpv import binding; binding()"],
-                          cwd=ROOT, env=env).returncode:
-            sys.exit(MPV_HELP)
-    elif subprocess.run([PYTHON, "-c", "import vlc"], cwd=ROOT, capture_output=True).returncode:
-        sys.exit(VLC_HELP)
-    return subprocess.run([PYTHON, "run.py", *args], cwd=ROOT, env=env).returncode
+    env = java_env() or dict(os.environ)
+    if (ROOT / "build/libbluray").is_dir():
+        env.setdefault("LIBBLURAY_CP", (ROOT / "build/libbluray").as_posix() + "/")  # jars matching the system libbluray
+    built = ROOT / "build/mpv" / {"darwin": "lib/libmpv.2.dylib", "win32": "bin/libmpv-2.dll"}.get(sys.platform, "lib/libmpv.so.2")
+    if built.is_file():
+        env.setdefault("LIBMPV_PATH", str(built))
+    if subprocess.run([PYTHON, "-c", "from isoplay.mpv import binding; binding()"], cwd=ROOT, env=env).returncode:
+        sys.exit(MPV_HELP)
+    return subprocess.run([PYTHON, "run.py", *sys.argv[1:]], cwd=ROOT, env=env).returncode
 
 
 def java_env():

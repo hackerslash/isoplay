@@ -25,13 +25,13 @@ they were authored, menus included, without downloading or mounting anything.
 
 ## Why not just VLC?
 
-VLC plays an ISO from a link, and isoplay is libVLC underneath, with the same libbluray and
+VLC plays an ISO from a link, and isoplay plays through libmpv with the same libbluray and
 libdvdnav. If VLC plays your disc well, keep using it. isoplay differs in four ways:
 
 - **It opens what VLC can't.** A `BDMV` or `VIDEO_TS` folder on a WebDAV share; a disc, or an
   `.iso`, inside an uncompressed `.zip`; ISO9660-only Blu-ray images, which libbluray can't read
   and isoplay re-presents as UDF; HD DVD, Video CD and DVD-Audio, whose main title it plays since
-  libVLC can't run their menus. Images holding several discs open a chooser.
+  their menus can't run. Images holding several discs open a chooser.
 - **It reads in parallel.** VLC uses one connection, one request at a time. isoplay fetches
   several ranges at once and reads ahead, finding how many connections a host tolerates and
   backing off when it pushes back. It can't add bandwidth the host or your line doesn't have.
@@ -46,7 +46,7 @@ libdvdnav. If VLC plays your disc well, keep using it. isoplay differs in four w
 A direct link to an `.iso`, `.img` or `.zip` (extensionless download links work too), or a WebDAV
 folder ending in `/`. The host must support HTTP `Range` requests; credentials go in the link,
 as `https://user:pass@host/disc.iso`. Images must already be decrypted: there is no AACS, so
-retail UHD discs won't play as they are. Plain video links go straight to libVLC, as in VLC.
+retail UHD discs won't play as they are. Plain video links go straight to mpv.
 
 ## Install
 
@@ -56,7 +56,7 @@ retail UHD discs won't play as they are. Plain video links go straight to libVLC
 | Windows x64 | `isoplay-windows-amd64.zip` | SmartScreen: More info, then Run anyway |
 | Linux x64 | `isoplay-linux-x86_64.tar.gz` | Ubuntu 24.04+ or equivalent, X11 or XWayland |
 
-libVLC and a trimmed Java runtime are bundled, so there is nothing else to install. The app
+libmpv and a trimmed Java runtime are bundled, so there is nothing else to install. The app
 offers new releases and installs them, keeping the old version until the new one starts; turn
 the check off in **Options**.
 
@@ -67,7 +67,7 @@ Paste a link (⌘V / Ctrl+V), type one (⌘L / Ctrl+L), drop a file or link on t
 
 | Key | Action |
 |---|---|
-| Arrows, Return | navigate disc menus (macOS menus don't take clicks yet) |
+| Arrows, Return, mouse | navigate disc menus |
 | Space | play or pause |
 | M | disc popup menu |
 | ← → (Shift on discs) | seek 10 s |
@@ -84,31 +84,26 @@ Paste a link (⌘V / Ctrl+V), type one (⌘L / Ctrl+L), drop a file or link on t
 
 ## Development
 
-Running from source needs VLC installed; with a JDK 17+ present, `dev.py` also builds the Java
-runtime the bundle ships, so BD-J menus behave the same.
+Running from source needs libmpv 0.42+. `tools/build_mpv.py` builds the patched one the bundle
+ships (stock mpv opens disc images only from local paths, so remote discs need the patch) and
+the BD-J jar matching libbluray; with a JDK 17+ present, `dev.py` also builds the Java runtime,
+so BD-J menus behave the same.
 
 ```sh
+python3 tools/build_mpv.py      # patched libmpv into build/mpv, BD-J jars into build/libbluray
 python3 dev.py                  # creates .venv, installs deps, starts the app
 python3 dev.py path/or/url      # start on a file or link
 python3 dev.py --tests          # run the test suite
 .venv/bin/pip install -r requirements-build.txt && .venv/bin/python build.py   # bundle in dist/
 ```
 
-An experimental mpv engine is behind an extra flag: `python3 dev.py --mpv` runs the
-app with [libmpv](https://mpv.io) instead of libVLC, which from mpv 0.42 plays disc images
-directly and lets disc menus take the mouse, the thing libVLC 3 cannot do. Remote discs need
-the small libmpv patch that `python3 tools/build_mpv.py` builds into `build/` (stock mpv only
-opens local disc images); the same script builds the BD-J jar matching the system's libbluray.
-libVLC stays the default, and neither library is bundled yet. `spike_mpv.py` and
-`docs/spike-mpv.md` cover what still needs proving with real discs.
-
 `media.py` streams and probes links, `webdav.py` lists shares, `diskcache.py` keeps blocks
 between plays, `disc_image.py` presents ISO9660, zip and remote discs as UDF, and `app.py`,
-`widgets.py` and `theme.py` are the interface. Linux builds need the distro VLC
-(`libvlc5 vlc-plugin-base vlc-plugin-video-output libbluray-bdj`). Pushing a `v*` tag builds
-every platform and publishes a release. `ISOPLAY_DEBUG=1` logs libVLC and every retry, 429 and
-failure upstream.
+`widgets.py` and `theme.py` are the interface, with `mpv.py` the playback engine.
+.github/workflows/build.yml lists each platform's build dependencies. Pushing a `v*` tag builds
+every platform and publishes a release. `ISOPLAY_DEBUG=1` logs libmpv and every retry, 429 and
+failure upstream (`ISOPLAY_DEBUG=verbose` for libbluray's BD-J too).
 
 ## License
 
-MIT. Bundles include VLC (LGPL/GPL) and OpenJDK (GPLv2 with Classpath Exception).
+MIT. Bundles include mpv and FFmpeg (GPL) and OpenJDK (GPLv2 with Classpath Exception).

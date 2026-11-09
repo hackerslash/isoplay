@@ -1,4 +1,4 @@
-"""Player behaviour that needs no VLC instance: methods are called unbound on a stub."""
+"""Player behaviour that needs no libmpv: methods are called unbound on a stub."""
 import os
 import time
 import unittest

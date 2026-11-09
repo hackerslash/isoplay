@@ -10,12 +10,13 @@ plays the same remote images by using libbluray/libdvdnav's block-reader callbac
 (bd_open_stream/dvdnav_open_stream); tools/mpv-stream-discs.patch adds exactly that to
 stream_bluray.c and stream_dvdnav.c.
 
-The result lands in build/mpv, which dev.py --mpv picks up automatically (LIBMPV_PATH).
-The BD-J jars land in build/libbluray, named after the libbluray that mpv links against:
-a native 1.5.0 with a 1.4.1 jar makes libbluray disable BD-J and play the main title.
+libmpv lands in build/mpv, which dev.py and build.py pick up. The BD-J jars land in
+build/libbluray, built from the libbluray mpv links against: a native 1.5.0 with a 1.4.1 jar
+makes libbluray disable BD-J and play the main title.
 
-Needs: meson, ninja, libdvdnav and a JDK with javac; ant for the jar (brew install meson
-ninja libdvdnav ant). The mpv checkout and build products live under build/, which is gitignored.
+Needs: a C compiler, meson, ninja, pkg-config, mpv's dependencies (FFmpeg, libplacebo, libass,
+libdvdnav, libbluray), and ant plus a JDK for the jar. .github/workflows/build.yml installs them
+on each platform.
 """
 import os
 import shutil
@@ -42,7 +43,7 @@ def run(*cmd, **kw):
 def mpv():
     if not (SRC / ".git").is_dir():
         shutil.rmtree(SRC, ignore_errors=True)
-        run("git", "clone", "--depth", "1", "--branch", VERSION,
+        run("git", "clone", "-c", "core.autocrlf=false", "--depth", "1", "--branch", VERSION,
             "https://github.com/mpv-player/mpv.git", SRC)
     check = subprocess.run(["git", "-C", str(SRC), "apply", "--reverse", "--check", str(PATCH)],
                            capture_output=True)
@@ -51,18 +52,16 @@ def mpv():
     else:
         run("git", "-C", str(SRC), "apply", str(PATCH))
     if not (MPV_BUILD / "build.ninja").exists():
-        run("meson", "setup", MPV_BUILD, SRC, "--buildtype=release", f"--prefix={PREFIX}",
-            "-Dlibmpv=true", "-Ddvdnav=enabled", "-Dlibbluray=enabled")
+        run("meson", "setup", MPV_BUILD, SRC, "--buildtype=release", f"--prefix={PREFIX}", "--libdir=lib",
+            "-Dlibmpv=true", "-Dcplayer=false", "-Ddvdnav=enabled",
+            "-Dlibbluray=enabled", "-Dlua=disabled", "-Djavascript=disabled", "-Dvapoursynth=disabled",
+            "-Dlibarchive=disabled", "-Drubberband=disabled", "-Dmanpage-build=disabled")
     run("ninja", "-C", MPV_BUILD)
     run("ninja", "-C", MPV_BUILD, "install")
 
 
 def bdj_jar():
     """libbluray wants a jar built from its own version; Homebrew installs none at all."""
-    if not shutil.which("ant") or not shutil.which("javac"):
-        print("no ant/javac: skipping the BD-J jar (HDMV menus still work, BD-J plays the main title)",
-              flush=True)
-        return
     version = subprocess.run(["pkg-config", "--modversion", "libbluray"],
                              capture_output=True, text=True, check=True).stdout.strip()
     src = BUILD / f"libbluray-{version}"
@@ -84,15 +83,11 @@ def bdj_jar():
 
 
 def main():
-    if sys.platform != "darwin":
-        print("this script builds the macOS libmpv used for development; adjust the "
-              "dependencies for other platforms", flush=True)
     BUILD.mkdir(exist_ok=True)
-    os.environ.setdefault("PKG_CONFIG_PATH", "/opt/homebrew/lib/pkgconfig")
+    if sys.platform == "darwin":
+        os.environ.setdefault("PKG_CONFIG_PATH", "/opt/homebrew/lib/pkgconfig")
     mpv()
     bdj_jar()
-    print("\nbuilt:", PREFIX / "lib" / "libmpv.2.dylib", flush=True)
-    print("dev.py --mpv picks it up automatically", flush=True)
 
 
 if __name__ == "__main__":

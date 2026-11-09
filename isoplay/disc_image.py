@@ -1,7 +1,7 @@
-"""Present a disc buried in an ISO9660 image or a zip as something libVLC can open.
+"""Present a disc buried in an ISO9660 image or a zip as something mpv can open.
 
 libbluray reads UDF, not ISO9660 or zip, and libdvdread wants VIDEO_TS at the root, so
-DVDs and Blu-rays are republished as UDF. Formats libVLC plays but cannot navigate --
+DVDs and Blu-rays are republished as UDF. Formats mpv plays but cannot navigate --
 HD DVD, VCD, DVD-Audio, a plain rip of media files -- have their main title served as
 itself instead. Either way only metadata is generated, in memory; the payload stays in
 the upstream cache and is never copied.
@@ -121,7 +121,7 @@ class _MetadataImage(io.RawIOBase):
 
 class _MappedUDF(pycdlib.PyCdlib):
     # This is the only private pycdlib hook. Pin its version and exercise the
-    # resulting image with both pycdlib and libVLC when upgrading the dependency.
+    # resulting image with both pycdlib and mpv when upgrading the dependency.
     def _output_file_data(self, outfp, blocksize, ino):
         start = ino.extent_location() * self.logical_block_size
         length = ino.get_data_length()
@@ -201,7 +201,7 @@ def disc_kind(data):
 
 
 class _FileView(io.RawIOBase):
-    """One title lifted out of an image and served as itself, for what libVLC can't navigate."""
+    """One title lifted out of an image and served as itself, for what mpv can't navigate."""
 
     def __init__(self, fp, name):
         self.fp, self.size, self.name = fp, fp.size, name
@@ -312,11 +312,11 @@ def _nested_image(cache, files):
 
 
 def project_media(cache):
-    """The main title of an image libVLC plays but can't navigate: HD DVD, VCD, DVD-Audio, data rips."""
+    """The main title of an image mpv plays but can't navigate: HD DVD, VCD, DVD-Audio, data rips."""
     try:
         files, _ = _walk_iso9660(cache)
     except Exception:
-        return None  # not a tree pycdlib can read; let libVLC try the image itself
+        return None  # not a tree pycdlib can read; let mpv try the image itself
     return _title_view(cache, files)
 
 

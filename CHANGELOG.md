@@ -2,19 +2,13 @@
 
 ## Unreleased
 
-- Behind an experimental **mpv engine**, an opt-in prototype of the alternative to libVLC that
-  mpv 0.42 makes possible: direct `.iso` playback, and disc menus that take mouse input
-  (`discnav mouse-move`/`mouse-click`), which libVLC 3 has no public way to receive. Video is
-  drawn by MpvRenderContext into a Qt OpenGL widget instead of native windows, so overlays are
-  ordinary widgets and menus take clicks. Run it with `python dev.py --mpv`; the default engine
-  stays libVLC. Remote discs go through a patched libmpv built by `tools/build_mpv.py`, because
-  stock mpv opens disc images only from local paths; the same script builds the BD-J jar that
-  matches the system libbluray. Sees `futureplan.md` item 1; nothing is bundled yet
-- The mpv engine stays responsive on slow links: its own cache and readahead are sized for
-  network play (`demuxer-readahead-secs`, a larger stream buffer, FFmpeg reconnects,
-  `force-seekable`), and a seek now reports buffering from its first frozen frame instead of
-  going quiet — seeks back to the start and small files without cache events earn the
-  spinner too, after instant seeks had their grace period
+- **libmpv replaces libVLC.** Disc menus take the mouse on every platform, video is drawn into
+  the window by mpv's render API, and disc images stream to a patched libmpv
+  (`tools/mpv-stream-discs.patch`, built by `tools/build_mpv.py`) that reads them through
+  libbluray's and libdvdnav's block callbacks. Bundles ship that libmpv with its libraries and
+  BD-J jars built for the bundled libbluray
+- mpv's cache, readahead and FFmpeg reconnects are tuned for network play, and seeks show the
+  buffering spinner while the picture is frozen
 
 ## 0.3.7
 

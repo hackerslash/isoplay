@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """Build a self-contained isoplay bundle for the current OS into dist/.
 
-Needs: Python with requirements.txt installed, a JDK 17+ (JAVA_HOME or on PATH) for jlink,
-and on Linux the distro VLC packages (see .github/workflows/build.yml).
+Needs: Python with requirements.txt installed, a JDK 17+ (JAVA_HOME or on PATH) for jlink and
+what tools/build_mpv.py needs to build the patched libmpv (see .github/workflows/build.yml).
 """
 import os
 import platform
-import plistlib
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import urllib.request
-import zipfile
 from pathlib import Path
 
-VLC_VERSION = "3.0.24"
-VLC_URL = "https://download.videolan.org/pub/videolan/vlc/{v}/{path}"
 ROOT = Path(__file__).resolve().parent
 BUILD, DIST = ROOT / "build", ROOT / "dist"
-STAGE = BUILD / "vlc"
+MPV = BUILD / "mpv"  # tools/build_mpv.py installs here
+STAGE = BUILD / "mpv-stage"
 JRE_MODULES = "java.base,java.desktop,java.rmi"  # jdeps on the libbluray jars
 DEJAVU_URL = ("https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/"
               "dejavu-fonts-ttf-2.37.tar.bz2")
@@ -57,51 +54,62 @@ def download(url, dest):
     return dest
 
 
-def vlc_macos():
-    arch = "arm64" if platform.machine() == "arm64" else "intel64"
-    dmg = download(VLC_URL.format(v=VLC_VERSION, path=f"macosx/vlc-{VLC_VERSION}-{arch}.dmg"),
-                   BUILD / f"vlc-{arch}.dmg")
-    out = subprocess.check_output(["hdiutil", "attach", "-nobrowse", "-readonly", "-plist", dmg])
-    mnt = Path(next(e["mount-point"] for e in plistlib.loads(out)["system-entities"] if "mount-point" in e))
-    try:
-        src = mnt / "VLC.app/Contents/MacOS"
-        for d in ("lib", "plugins"):
-            shutil.copytree(src / d, STAGE / d, symlinks=True)
-    finally:
-        run("hdiutil", "detach", mnt)
-    for ui in ("libmacosx_plugin.dylib", "libosx_notifications_plugin.dylib"):  # VLC.app UI; need Sparkle/Growl
-        (STAGE / "plugins" / ui).unlink()
-    # VLC's own executable supplies @rpath; without it libvlc cannot find libvlccore
-    run("install_name_tool", "-add_rpath", "@loader_path", STAGE / "lib/libvlc.5.dylib")
+def libmpv():
+    run(sys.executable, ROOT / "tools/build_mpv.py")
+    STAGE.mkdir(parents=True)
+    for jar in (BUILD / "libbluray").glob("*.jar"):
+        shutil.copy2(jar, STAGE)
+    {"darwin": mpv_macos, "win32": mpv_windows}.get(sys.platform, mpv_linux)()
 
 
-def vlc_windows():
-    z = download(VLC_URL.format(v=VLC_VERSION, path=f"win64/vlc-{VLC_VERSION}-win64.zip"), BUILD / "vlc-win64.zip")
-    top = f"vlc-{VLC_VERSION}/"
-    with zipfile.ZipFile(z) as zf:
-        for name in zf.namelist():
-            rel = name[len(top):]
-            if name.endswith("/") or not (rel in ("libvlc.dll", "libvlccore.dll") or rel.startswith("plugins/")):
+def mpv_macos():
+    """libmpv and every non-system dylib under it, relinked to load from beside each other."""
+    queue, seen = [str(MPV / "lib/libmpv.2.dylib")], set()
+    while queue:
+        src = Path(queue.pop())
+        if src.name in seen:
+            continue
+        seen.add(src.name)
+        dst = STAGE / src.name
+        shutil.copy2(src.resolve(), dst)
+        dst.chmod(0o755)
+        changes = ["-id", f"@loader_path/{src.name}"]
+        for line in subprocess.check_output(["otool", "-L", dst], text=True).splitlines()[1:]:
+            dep = line.strip().split(" (")[0]
+            if dep.startswith(("/usr/lib/", "/System/")) or Path(dep).name == src.name:
                 continue
-            out = STAGE / rel
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(zf.read(name))
+            for prefix in ("@rpath/", "@loader_path/"):
+                if dep.startswith(prefix):
+                    found = [d / dep[len(prefix):] for d in (src.resolve().parent, Path("/opt/homebrew/lib"))]
+                    dep = str(next(f for f in found if f.exists()))
+            changes += ["-change", line.strip().split(" (")[0], f"@loader_path/{Path(dep).name}"]
+            queue.append(dep)
+        subprocess.run(["install_name_tool", *changes, dst], check=True, capture_output=True)
+    print(f"bundled {len(seen)} dylibs", flush=True)
 
 
-def vlc_linux():
-    libdir = Path(subprocess.check_output(["dpkg-architecture", "-qDEB_HOST_MULTIARCH"], text=True).strip())
-    libdir = Path("/usr/lib") / libdir
-    (STAGE / "lib").mkdir(parents=True)
-    for pat in ("libvlc.so.5*", "libvlccore.so.9*"):
-        for f in libdir.glob(pat):
-            shutil.copy2(f, STAGE / "lib", follow_symlinks=False)
-    shutil.copytree(libdir / "vlc/plugins", STAGE / "plugins", symlinks=False)
-    for jar in Path("/usr/share/java").glob("libbluray*j2se-*.jar"):
-        shutil.copy2(jar.resolve(), STAGE / "plugins" / jar.name)
+def mpv_windows():
+    """libmpv-2.dll and the MinGW DLLs it imports, from the toolchain that built it."""
+    bindir = Path(shutil.which("gcc")).parent
+    queue, seen = [MPV / "bin/libmpv-2.dll"], set()
+    while queue:
+        src = queue.pop()
+        if src.name.lower() in seen:
+            continue
+        seen.add(src.name.lower())
+        shutil.copy2(src, STAGE / src.name)
+        for line in subprocess.check_output(["objdump", "-p", src], text=True).splitlines():
+            if "DLL Name:" in line and (bindir / line.split(":", 1)[1].strip()).is_file():
+                queue.append(bindir / line.split(":", 1)[1].strip())
+    print(f"bundled {len(seen)} DLLs", flush=True)
+
+
+def mpv_linux():
+    shutil.copy2((MPV / "lib/libmpv.so.2").resolve(), STAGE / "libmpv.so.2")
 
 
 def linux_deps(dest):
-    """Copy shared-library dependencies of the staged libVLC into dest (PyInstaller adds it to LD_LIBRARY_PATH)."""
+    """Copy shared-library dependencies of the staged libmpv into dest (PyInstaller adds it to LD_LIBRARY_PATH)."""
     seen = set()
     for so in [*STAGE.rglob("*.so*")]:
         out = subprocess.run(["ldd", so], capture_output=True, text=True).stdout
@@ -111,7 +119,7 @@ def linux_deps(dest):
                 continue
             path = parts[1].split("(")[0].strip()
             name = Path(path).name
-            if name in seen or name.startswith(LINUX_SKIP) or name.startswith(("libvlc.", "libvlccore.")):
+            if name in seen or name.startswith(LINUX_SKIP) or name.startswith("libmpv."):
                 continue
             seen.add(name)
             shutil.copy2(path, dest / name)
@@ -172,7 +180,7 @@ def main():
     for d in (STAGE, BUILD / "pyinstaller"):
         shutil.rmtree(d, ignore_errors=True)
     BUILD.mkdir(exist_ok=True)
-    {"darwin": vlc_macos, "win32": vlc_windows}.get(sys.platform, vlc_linux)()
+    libmpv()
     jre()
 
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--name", "isoplay",
@@ -187,7 +195,7 @@ def main():
     else:
         internal = DIST / "isoplay/_internal"
     prune_qt(app / "Contents" if sys.platform == "darwin" else internal)
-    for name, src in (("vlc", STAGE), ("jre", BUILD / "jre")):
+    for name, src in (("mpv", STAGE), ("jre", BUILD / "jre")):
         if sys.platform == "darwin":  # codesign only accepts code in Frameworks; data lives in Resources
             shutil.copytree(src, app / "Contents/Resources" / name, symlinks=True)
             (internal / name).symlink_to(Path("../Resources") / name)
@@ -196,7 +204,7 @@ def main():
 
     tag = f"{ {'darwin': 'macos', 'win32': 'windows'}.get(sys.platform, 'linux') }-{platform.machine().lower()}"
     if sys.platform == "darwin":
-        # --deep rejects the JRE/VLC data files; sign each Mach-O, then the bundle
+        # --deep rejects the JRE/libbluray data files; sign each Mach-O, then the bundle
         macho = (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
         for f in sorted((app / "Contents/Resources").rglob("*")):
             if f.is_file() and not f.is_symlink() and f.open("rb").read(4) in macho:

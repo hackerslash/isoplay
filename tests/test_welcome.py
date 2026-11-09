@@ -1,24 +1,10 @@
-"""Resize regressions for a populated welcome screen, without starting VLC."""
+"""Resize regressions for a populated welcome screen."""
 import os
-from pathlib import Path
-import sys
 import time
 import unittest
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-# CI can exercise this native Qt layout on every OS after the bundle is built,
-# without requiring a separate system VLC installation on Windows or macOS.
-bundle = Path(__file__).resolve().parent.parent / "dist"
-runtime = bundle / ("isoplay.app/Contents/Frameworks" if sys.platform == "darwin" else "isoplay/_internal")
-library = runtime / "vlc" / ("lib/libvlc.dylib" if sys.platform == "darwin" else "libvlc.dll" if sys.platform == "win32" else "lib/libvlc.so.5")
-if library.is_file():
-    os.environ["PYTHON_VLC_LIB_PATH"] = str(library)
-    if sys.platform == "win32":
-        dll_directory = os.add_dll_directory(str(library.parent))
-    elif sys.platform.startswith("linux"):
-        import ctypes
-        ctypes.CDLL(str(library.parent / "libvlccore.so.9"), mode=ctypes.RTLD_GLOBAL)
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QImage, QRegion
 from PySide6.QtTest import QTest

@@ -1,38 +1,14 @@
-"""The libmpv engine: futureplan item 1, the prototype behind the same interface as libVLC.
+"""The playback engine: libmpv 0.42+, patched by tools/build_mpv.py to open disc images over a
+stream, so disc menus play from isoplay's loopback URL and take the mouse.
 
-What mpv 0.42 (released 2026-11-05) brings with it:
-
-- direct playback of .iso images of DVD-Video, DVD-Audio and Blu-ray (auto-detected by the
-  stream layer, including ours at http://127.0.0.1:PORT/disc.iso);
-- disc menus again: a `--disc-menu` option, a synthetic "Disc Menu" edition, a `discnav`
-  command with up/down/left/right/select/popup and - decisive for macOS - `mouse-move` and
-  `mouse-click` actions, plus a `disc-menu-active` property to know a menu is up. libVLC 3 has
-  no public way to send mouse coordinates to a menu, which is what item 1 is about;
-- its own network layer on libcurl with HTTP/2 and connection reuse.
-
-Input reaches the menu through mpv's input layer: `discnav mouse-move` / `discnav mouse-click`
-take normalized 0..1 coordinates (top-left 0,0) and map them from the render window into
-source-video coordinates themselves. Qt mouse events are forwarded that way — normalized by
-the widget's own size, so device pixels and OSD scaling never enter it — rather than
-repositioning buttons by hand. (The `mouse` command's `mouse-pos` is in OSD units, not window
-pixels, so pixel coordinates misland; the explicit discnav arguments skip that layer.)
-
-Rendering: `MpvRenderContext` draws into a QOpenGLWidget's own framebuffer (`paintGL` into
-`defaultFramebufferObject()` with FLIP_Y), so video is an ordinary Qt widget and the four
-floating Overlay windows the libVLC path needs (Qt can't paint over a native surface) can stay
-ordinary widgets.
-
-python-mpv 1.0.8 exposes the render API we need (MpvRenderContext, MpvOpenGLFBO,
-MpvGlGetProcAddressFn); the mpv.py single file it ships as is also fine to vendor. The libmpv
-import is lazy: machines without it keep working with libVLC untouched.
-
-Open questions the spike (spike_mpv.py) has to settle with real discs are in docs/spike-mpv.md.
+Video is drawn by MpvRenderContext into a QOpenGLWidget, so it is an ordinary Qt widget and
+mouse events reach it. Menu positions go to discnav normalized 0..1 against the drawn picture;
+the `mouse` command's mouse-pos is in OSD units, so pixels would misland.
 """
 import ctypes
 import ctypes.util
 import os
 import queue
-import re
 import threading
 import time
 
@@ -43,55 +19,34 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from isoplay.media import UA
 
 
-def _find_libmpv():
-    """Where libmpv is, if anywhere: LIBMPV_PATH wins, then the loader's own search, then the
-    places a mac or linux install actually puts it (ctypes' search misses Homebrew)."""
-    path = os.environ.get("LIBMPV_PATH")
-    if path:
-        return path
-    found = ctypes.util.find_library("mpv")
-    if found:
-        return found
-    candidates = ("/opt/homebrew/lib/libmpv.2.dylib",  # Homebrew on Apple silicon
-                  "/usr/local/lib/libmpv.2.dylib",  # Homebrew on Intel, or a manual install
-                  "/opt/homebrew/opt/mpv/lib/libmpv.2.dylib",
-                  "/usr/lib/libmpv.so.2", "/usr/lib64/libmpv.so.2")  # usual Linux So names
-    return next((c for c in candidates if os.path.exists(c)), None)
+LIBMPV = ("/opt/homebrew/lib/libmpv.2.dylib", "/usr/local/lib/libmpv.2.dylib")  # ctypes misses Homebrew
 
 
 def binding():
-    """The python-mpv module, loaded only when the mpv engine is asked for. python-mpv locates
-    libmpv with ctypes.util.find_library, which misses, among others, Homebrew's lib dir - so the
-    discovered path is lent to it until libmpv is where the loader already looks."""
-    if not os.environ.get("ISOPLAY_DEBUG_MPV_RAW"):
-        found = _find_libmpv()
-        if not found:
-            hint = ctypes.util.find_library("mpv")
-            raise SystemExit(
-                "the mpv engine can't find libmpv."
-                "\n  macOS    brew install mpv   (then LIBMPV_PATH=/opt/homebrew/opt/mpv/lib/libmpv.2.dylib)"
-                "\n  Windows  put libmpv-2.dll next to the app, or LIBMPV_PATH=<its path>"
-                "\n  Linux    sudo apt install libmpv2 (or install mpv)")
-        _raw_search = ctypes.util.find_library
-        ctypes.util.find_library = (lambda name: found if name == "mpv" else _raw_search(name))
+    """python-mpv, loaded against LIBMPV_PATH or the first libmpv found; python-mpv itself only
+    asks ctypes.util.find_library, so the path is lent to that for the import."""
+    found = (os.environ.get("LIBMPV_PATH") or ctypes.util.find_library("mpv")
+             or next((c for c in LIBMPV if os.path.exists(c)), None))
+    search = ctypes.util.find_library
+    if found:
+        ctypes.util.find_library = lambda name: found if "mpv" in name else search(name)
     try:
         import mpv
     except OSError as e:
-        raise SystemExit(f"the mpv engine can't load libmpv ({e})") from e
+        raise SystemExit(f"the mpv engine can't load libmpv ({e}); set LIBMPV_PATH") from e
+    finally:
+        ctypes.util.find_library = search
     return mpv
-
-
-# --- pure helpers (no libmpv needed at module import; tests run them with stubs) ------------------------
 
 
 def end_to_event(reason):
     """Map an end-file reason onto isoplay's event names (MpvEventEndFile: 0 EOF, 4 ERROR;
-    RESTARTED/QUIT/ABORTED keep quiet, exactly like the libVLC events the old path used)."""
+    RESTARTED/QUIT/ABORTED keep quiet)."""
     return {0: "end", 4: "error"}.get(reason)
 
 
 # ISO 639 codes (mpv reports 3-letter bibliographic, sometimes 2-letter) to the names a
-# track menu shows, the way VLC's own descriptions read.
+# track menu shows.
 LANGS = {
     "eng": "English", "en": "English",
     "fra": "French", "fre": "French", "fr": "French",
@@ -149,7 +104,7 @@ CODECS = {
 
 
 def track_label(item):
-    """One line for the track menu, VLC-style: title, language name and friendly codec."""
+    """One line for the track menu: title, language name and friendly codec."""
     title = (item.get("title") or "").strip()
     lang = LANGS.get((item.get("lang") or "").lower(), item.get("lang") or "")
     codec = CODECS.get((item.get("codec") or "").lower(), item.get("codec") or "")
@@ -160,9 +115,8 @@ def track_label(item):
 
 
 def track_entries(track_list, kind, selected):
-    """([(tid, label)], current_tid) for audio or subtitle tracks, with Off first, like libVLC's
-    description lists, which is the shape the app's track menu is built for. Identical discs
-    list the same language twice, so repeats are numbered from their second showing."""
+    """([(tid, label)], current_tid) for audio or subtitle tracks, Off first. Discs often list a
+    language twice, so repeats are numbered from their second showing."""
     items = [t for t in track_list or () if t.get("type") == kind]
     rows = [(-1, "Off")]
     seen = {}
@@ -176,21 +130,10 @@ def track_entries(track_list, kind, selected):
     return rows, current
 
 
-def fit_zoom(width, height, video_w, video_h):
-    """Video zoom relative to mpv's own fit, so the picture covers the widget ("fill"): the cover
-    scale divided by the box scale, both from the same source-pixel geometry."""
-    if not video_w or not video_h or not width or not height:
-        return 0.0
-    cover = max(width / video_w, height / video_h)
-    box = min(width / video_w, height / video_h)
-    return cover / box if box else 0.0
-
-
-# mpv's own network layer, tuned for isoplay's inputs (mpv 0.42 option names). Discs arrive
-# over the loopback proxy and plain videos straight over remote https, so mpv's cache,
-# readahead and reconnects all matter. Applied best-effort after construction, one option at
-# a time, so a libmpv missing one still starts.
-NETWORK_OPTIONS = {
+# Set one at a time after construction, so a libmpv missing one still starts. Discs arrive over
+# the loopback proxy and plain videos straight over https.
+OPTIONS = {
+    "osc": "no",  # only exists in builds with Lua
     "cache": "yes",  # always keep a demuxer cache, even for inputs mpv deems local
     "demuxer-readahead-secs": "10",  # headroom past the play head (default 1); seeks stall less
     "stream-buffer-size": "1048576",  # fewer round trips per megabyte (default 128 KiB)
@@ -201,63 +144,39 @@ NETWORK_OPTIONS = {
 }
 
 
-# --- the engine -----------------------------------------------------------------------------------------
-
-
 class MpvEngine:
-    """libmpv 0.42: menus take mouse input, and video is drawn into a Qt widget by MpvRenderContext."""
+    _fit = "fit"
 
-    name = "libmpv"
-
-    def __init__(self, _player=None):
+    def __init__(self):
         self.mpv = binding()
-        if _player is not None:  # tests (or the spike) inject a stub instead of libmpv
-            self.player = _player
-        else:
-            # vo=libmpv hands drawing to MpvRenderContext. mpv's own window, OSC and key bindings
-            # are off: the app is the window, and it forwards only what a disc menu needs.
-            options = dict(
-                config="no",
-                vo="libmpv",
-                idle="yes",  # stay alive between sources instead of quitting with nothing loaded
-                keep_open="no",
-                osc="no",
-                input_default_bindings="no",
-                save_watch_history="no",
-                user_agent=UA,
-                hwdec="auto-safe",
-            )
-            if os.environ.get("ISOPLAY_DEBUG"):
-                options["loglevel"] = "info"  # libmpv's own story of the disc, line by line
-                if os.environ.get("ISOPLAY_DEBUG") == "verbose":
-                    options["loglevel"] = "verbose"  # libbluray's BD-J chatter too
-                options["log_handler"] = lambda level, prefix, text: print(
-                    f"[mpv {level} {prefix}] {text.strip()}", flush=True)
-            self.player = self.mpv.MPV(**options)
+        options = dict(config="no", vo="libmpv", idle="yes", keep_open="no",
+                       input_default_bindings="no", save_watch_history="no", user_agent=UA,
+                       hwdec="auto-safe")
+        debug = os.environ.get("ISOPLAY_DEBUG")
+        if debug:
+            options["loglevel"] = "verbose" if debug == "verbose" else "info"
+            options["log_handler"] = lambda level, prefix, text: print(
+                f"[mpv {level} {prefix}] {text.strip()}", flush=True)
+        self.player = self.mpv.MPV(**options)
+        if self.player.mpv_version_tuple < (0, 42, 0):
+            version = self.player.mpv_version
+            self.player.terminate()
+            raise SystemExit(f"the mpv engine needs mpv 0.42.0 or newer for disc menus; {version} is installed.")
         self.video_widget = None
         self.render_context = None
         self.emit = None
-        self._vout = False  # once per open, a video track actually being drawn
-        self._cache_state = None  # mpv's cache fill percentage, when it has a cache at all
-        self._stalled = False     # paused-for-cache: mpv wants data and none is arriving
-        self._seeking = False     # a seek is in flight: the picture is frozen by definition
-        # Hover positions queue here and a worker forwards only the latest: each discnav
-        # round trip can block behind stream reads, so sending every pixel from the Qt
-        # thread would queue stale positions behind the cursor and lag the highlight.
+        self._vout = False
+        self._cache_state = None
+        self._stalled = False  # paused-for-cache
+        self._seeking = False
+        # discnav round trips can block behind stream reads, so hovers go through a worker that
+        # forwards only the latest; a click bumps the generation and drops older hovers.
         self._mouse_lock = threading.Lock()
-        self._mouse_queue: queue.Queue = queue.Queue()
-        self._mouse_gen = 0  # clicks invalidate queued hovers older than themselves
-        self._mouse_alive = True
-        self._mouse_worker = threading.Thread(target=self._mouse_drain, daemon=True)
-        self._mouse_worker.start()
-        self._apply_network_options()
+        self._mouse_queue = queue.Queue()
+        self._mouse_gen = 0
+        threading.Thread(target=self._mouse_drain, daemon=True).start()
+        self._apply_options()
         self._observe()
-        version = getattr(self.player, "mpv_version", "") or ""
-        match = re.search(r"v(\d+)\.(\d+)\.(\d+)", version)
-        if match and tuple(map(int, match.groups())) < (0, 42, 0):
-            # disc menus (the --disc-menu option, discnav, the Disc Menu edition) arrived in
-            # 0.42.0; before that this engine would only ever show the main title.
-            raise SystemExit(f"the mpv engine needs mpv 0.42.0 or newer for disc menus; {version.strip()} is installed.")
         player = self.player
 
         @player.event_callback("end-file")
@@ -266,8 +185,8 @@ class MpvEngine:
             if name:
                 self._emit(name)
 
-    def _apply_network_options(self):
-        for name, value in NETWORK_OPTIONS.items():
+    def _apply_options(self):
+        for name, value in OPTIONS.items():
             try:
                 self.player[name] = value
             except Exception as e:  # noqa: BLE001 - an older or newer libmpv without this option
@@ -318,8 +237,6 @@ class MpvEngine:
         player.observe_property("video-format", _video)
 
     def _emit(self, name):
-        if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] event {name}", flush=True)
         if self.emit:
             self.emit(name)
 
@@ -336,15 +253,13 @@ class MpvEngine:
         pass  # the render context is created by the widget's initializeGL, once there is a GL context
 
     def shutdown(self):
-        try:  # tests (and the spike) inject stubs without the hover worker
-            self._mouse_alive = False
-            self._mouse_queue.put_nowait(None)
-        except AttributeError:
-            pass
-        try:
-            self.player.terminate()
-        except Exception:  # noqa: BLE001 - a closing app shouldn't die on engine shutdown
-            pass
+        self._mouse_queue.put_nowait(None)
+        if self.render_context:  # mpv requires the render context freed, GL current, before terminate
+            self.video_widget.makeCurrent()
+            self.render_context.free()
+            self.video_widget.doneCurrent()
+            self.render_context = None
+        self.player.terminate()
 
     def _mouse_drain(self):
         """Forward hover positions, latest only, until shutdown. Runs off the Qt thread so
@@ -352,7 +267,7 @@ class MpvEngine:
         queued behind a newer hover, or behind a click, is dropped unsent."""
         while True:
             position = self._mouse_queue.get()
-            if position is None or not self._mouse_alive:
+            if position is None:
                 return
             x, y, gen = position
             while True:  # a newer hover already supersedes this one
@@ -360,13 +275,13 @@ class MpvEngine:
                     position = self._mouse_queue.get_nowait()
                 except queue.Empty:
                     break
-                if position is None or not self._mouse_alive:
+                if position is None:
                     return
                 x, y, gen = position
             with self._mouse_lock:
                 current = self._mouse_gen
             if gen != current:
-                continue  # a click landed since: its own move already went through
+                continue
             try:
                 self.player.command("discnav", "mouse-move", f"{x:.4f}", f"{y:.4f}")
             except Exception:  # noqa: BLE001 - the menu went away mid-hover
@@ -375,23 +290,14 @@ class MpvEngine:
     # --- media ---------------------------------------------------------------------------------------
 
     def open(self, mrl, kind=None, menus=True):
-        if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] open {mrl} kind={kind or 'plain'} menus={menus}", flush=True)
         self._vout = False
         self._stalled = self._seeking = False
         self._cache_state = None
         player = self.player
         player.pause = False
-        try:  # reset what set_fit may have changed last time
-            player.video_aspect_override = "no"
-            player.video_zoom = 0
-        except Exception:  # noqa: BLE001 - exact option names differ between mpv versions
-            pass
         if kind in ("dvd", "bluray"):
             player["disc-menu"] = "yes" if menus else "no"
-            # Both a local path and isoplay's loopback URL go through the disc backend's
-            # device option, so a streamed image is read by bd_open_stream/dvdnav_open_stream
-            # (patched libmpv) exactly like VLC does it. Stock mpv only accepts local paths.
+            # A loopback URL as the device needs the patched libmpv (tools/build_mpv.py).
             if kind == "bluray":
                 player["bluray-device"] = mrl
                 target = "bd://"
@@ -510,24 +416,9 @@ class MpvEngine:
     # --- appearance ------------------------------------------------------------------------------------
 
     def set_fit(self, mode, width, height):
-        """fit is mpv's own letterboxed fit; fill zooms the picture so it covers the window;
-        stretch overrides the aspect to the window's (exact) shape."""
         self._fit = mode
-        params = {}
-        try:
-            params = self.player.video_params or {}
-        except Exception:  # noqa: BLE001 - nothing is playing yet
-            pass
-        player = self.player
-        if mode == "stretch":
-            player.video_aspect_override = f"{max(width, 1)}:{max(height, 1)}"
-            player.video_zoom = 0
-        elif mode == "fill":
-            player.video_aspect_override = "no"  # "no" is -2, mpv's own aspect
-            player.video_zoom = fit_zoom(width, height, params.get("w"), params.get("h"))
-        else:
-            player.video_aspect_override = "no"
-            player.video_zoom = 0
+        self.player.video_aspect_override = f"{max(width, 1)}:{max(height, 1)}" if mode == "stretch" else "no"
+        self.player.panscan = 1.0 if mode == "fill" else 0.0
 
     # --- disc menus ------------------------------------------------------------------------------------
 
@@ -543,59 +434,22 @@ class MpvEngine:
             vw = vh = None
         if not vw or not vh or not width or not height:
             return 0.0, 0.0, float(max(1, width)), float(max(1, height))
-        fit = getattr(self, "_fit", "fit")
-        if fit == "stretch":
+        if self._fit == "stretch":
             return 0.0, 0.0, float(width), float(height)
-        scale = (max if fit == "fill" else min)(width / vw, height / vh)
+        scale = (max if self._fit == "fill" else min)(width / vw, height / vh)
         dw, dh = vw * scale, vh * scale
         return (width - dw) / 2, (height - dh) / 2, dw, dh
 
     def navigate(self, action):
-        if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] discnav {action} menu-active={self.menu_active()}", flush=True)
         try:
             self.player.command("discnav", action)
-        except Exception as e:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
-            if os.environ.get("ISOPLAY_DEBUG"):
-                print(f"[mpv-engine] discnav {action} failed: {e!r}", flush=True)
-
-    def _src_remap(self, x, y):
-        """Counter-scale normalized coordinates when mpv maps against the wrong frame.
-
-        mpv multiplies by the resolution libdvdnav reported, which falls back to the PAL
-        default (720x576) when the VM isn't started on the first query and is never
-        retried. ISOPLAY_MPV_SRC names that resolution (e.g. 720x576); the position is
-        then expressed against it so the product lands on the true pixel. Unset means
-        mpv's base is trusted.
-        """
-        spec = os.environ.get("ISOPLAY_MPV_SRC", "")
-        match = re.fullmatch(r"(\d+)x(\d+)", spec)
-        if not match:
-            return x, y
-        try:
-            params = self.player.video_params or {}
-            vw, vh = params.get("w"), params.get("h")
-        except Exception:  # noqa: BLE001 - nothing is playing yet
-            vw = vh = None
-        if not vw or not vh:
-            return x, y
-        sw, sh = int(match[1]), int(match[2])
-        remapped = (x * vw / sw, y * vh / sh) if sw and sh else (x, y)
-        if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] src {sw}x{sh} video {vw}x{vh}: "
-                  f"{x:.4f},{y:.4f} -> {remapped[0]:.4f},{remapped[1]:.4f}", flush=True)
-        return remapped
+        except Exception:  # noqa: BLE001 - no disc menu to navigate
+            pass
 
     def menu_mouse_async(self, x, y):
-        """Queue a hover position for the worker, which forwards only the latest. Never
-        blocks the calling (Qt) thread, however slow the stream underneath is."""
-        x, y = self._src_remap(x, y)
         with self._mouse_lock:
             gen = self._mouse_gen
-        try:  # unbounded: put_nowait cannot fail, but never block the Qt thread either way
-            self._mouse_queue.put_nowait((x, y, gen))
-        except Exception:  # noqa: BLE001
-            pass
+        self._mouse_queue.put_nowait((x, y, gen))
 
     def menu_mouse(self, x, y, click):
         """Normalized 0..1 position in the render window (top-left 0,0), then let mpv map it
@@ -603,13 +457,7 @@ class MpvEngine:
         activates it exactly the way Enter does: mouse-click's own activation silently
         no-ops on discs where its lookup misses (mpv reports success regardless), while
         select on the hovered button is the path keyboard navigation proves every time."""
-        x = max(0.0, min(1.0, float(x)))
-        y = max(0.0, min(1.0, float(y)))
-        x, y = self._src_remap(x, y)
-        position = f"{x:.4f}", f"{y:.4f}"
-        if os.environ.get("ISOPLAY_DEBUG"):
-            print(f"[mpv-engine] discnav {'click' if click else 'move'} {position[0]} {position[1]} "
-                  f"menu-active={self.menu_active()}", flush=True)
+        position = f"{max(0.0, min(1.0, x)):.4f}", f"{max(0.0, min(1.0, y)):.4f}"
         try:
             if click:
                 with self._mouse_lock:  # queued hovers older than this are now stale
@@ -617,17 +465,12 @@ class MpvEngine:
             self.player.command("discnav", "mouse-move", *position)
             if click:
                 self.player.command("discnav", "select")
-        except Exception as e:  # noqa: BLE001 - nav before a disc is up (or on plain video) is noise
-            if os.environ.get("ISOPLAY_DEBUG"):
-                print(f"[mpv-engine] discnav click failed: {e!r}", flush=True)
-
-
-# --- the widget -----------------------------------------------------------------------------------------
+        except Exception:  # noqa: BLE001 - the menu went away
+            pass
 
 
 class MpvVideoWidget(QOpenGLWidget):
-    """Draws mpv's frames into the Qt window itself, so Qt sees every video pixel: overlays,
-    toasts and the loader become ordinary widgets, and mouse events reach disc menus."""
+    """Draws mpv's frames into the Qt window itself, so mouse events reach disc menus."""
 
     frame_ready = Signal()
 
@@ -671,26 +514,12 @@ class MpvVideoWidget(QOpenGLWidget):
         self._menu_mouse(event, click=False)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:  # right click is left to mpv's context menu bindings
+        if event.button() == Qt.LeftButton:
             self._menu_mouse(event, click=True)
 
     def _menu_mouse(self, event, click):
-        active = self.engine.menu_active()
-        if os.environ.get("ISOPLAY_DEBUG"):
-            pos = event.position()
-            try:
-                params = self.engine.player.video_params or {}
-            except Exception:  # noqa: BLE001
-                params = {}
-            print(f"[mpv-engine] qt {'click' if click else 'move'} "
-                  f"{pos.x():.0f},{pos.y():.0f} of {self.width()}x{self.height()} "
-                  f"menu-active={active} fit={getattr(self.engine, '_fit', '?')} "
-                  f"video={params.get('w')}x{params.get('h')} "
-                  f"display={params.get('dw')}x{params.get('dh')} "
-                  f"rect={self.engine.video_rect(max(1, self.width()), max(1, self.height()))}",
-                  flush=True)
-        if not active:
-            return  # normal playback: the disc has no menu to take the mouse
+        if not self.engine.menu_active():
+            return
         w, h = max(1, self.width()), max(1, self.height())
         ox, oy, dw, dh = self.engine.video_rect(w, h)
         pos = event.position()

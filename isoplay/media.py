@@ -169,7 +169,7 @@ class Upstream:
 
 
 class Served:
-    """Whatever `view` projects, offered to libVLC at a loopback URL."""
+    """Whatever `view` projects, offered to mpv at a loopback URL."""
 
     size = 0  # only the raw-image path reads this; a view carries its own length
 
@@ -219,7 +219,7 @@ TAGS = itertools.count()
 RATE_WINDOW = 20  # seconds of fetches the arrival rate is measured over
 KEEP = 256 << 20  # RAM for one link's blocks, or for all of a share's together: the window and behind it
 RUN = 4 << 20  # read-ahead is fetched this much per request; each request costs ~1 s before any data
-# How far read-ahead runs past the player: ~20 s of UHD. libVLC's own buffer stays short so a
+# How far read-ahead runs past the player: ~20 s of UHD. mpv's own readahead is shorter so a
 # start or seek is quick; this one fills in the background while it plays.
 AHEAD = 160 << 20
 
@@ -429,7 +429,7 @@ class Blocks:
 
 
 class RangeCache(Blocks, Served):
-    """A remote disc image, cached in blocks and served to libVLC at a loopback URL."""
+    """A remote disc image, cached in blocks and served to mpv at a loopback URL."""
 
     def __init__(self, url, keep=KEEP, ahead=None, size=None):  # keep holds the whole read-ahead window
         super().__init__(url, keep, ahead, size)
@@ -513,7 +513,7 @@ def _endpoint(cache):
 
 
 class LocalImage(Served):
-    """An image on disk, projected and served when libVLC can't open it directly."""
+    """An image on disk, projected and served when mpv can't open it directly."""
 
     def __init__(self, path):
         self.fp = open(path, "rb")
@@ -701,7 +701,7 @@ DEPTH = 2  # folders to descend looking for discs: a rip of several discs is rar
 
 
 def disc_folders(path):
-    """Every DVD or Blu-ray folder at or under path: {folder to hand libVLC: kind}."""
+    """Every DVD or Blu-ray folder at or under path: {folder to hand mpv: kind}."""
     found, stack = {}, [(path, 0)]
     while stack:
         here, level = stack.pop()
@@ -732,7 +732,7 @@ def _folder(path, disc_root):
 def _streamed(proxy, kind):
     view = proxy.view
     if view is not None and getattr(view, "name", None):
-        # libVLC picks its demuxer from the URL, so a lifted title keeps its own name
+        # mpv picks its demuxer from the URL, so a lifted title keeps its own name
         proxy.mrl = proxy.mrl.rpartition("/")[0] + "/" + urllib.parse.quote(view.name)
     return proxy.mrl, kind, proxy, view.discs if view else (), view.disc_root if view else None
 
@@ -772,7 +772,7 @@ def _project(image, project):
 
 
 def prepare(src, disc_root=None):
-    """How libVLC should open src: (mrl, kind, Served | None, disc roots, chosen root). Blocks on I/O."""
+    """How mpv should open src: (mrl, kind, Served | None, disc roots, chosen root). Blocks on I/O."""
     ext = suffix(src)
     if ext in ARCHIVE_EXT:
         raise OSError(f"isoplay can't open {ext} archives")

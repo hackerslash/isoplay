@@ -6,9 +6,8 @@ import threading
 import time
 from pathlib import Path
 
-from isoplay import runtime  # noqa: F401 - sets the VLC environment before vlc loads
+from isoplay import runtime  # noqa: F401 - points libmpv, libbluray and Java at the bundle
 
-import vlc  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QEvent, QObject, QPoint, QRect, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal,
 )
@@ -20,10 +19,10 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from isoplay import media, updates  # noqa: E402
 from isoplay import __version__  # noqa: E402
-from isoplay.engine import create_engine  # noqa: E402
 from isoplay.media import display_name, fmt, is_url, normalize, prepare  # noqa: E402
 from isoplay.diskcache import GB, DiskCache  # noqa: E402
-from isoplay.runtime import BASE, VLC_DIR  # noqa: E402
+from isoplay.mpv import MpvEngine  # noqa: E402
+from isoplay.runtime import BASE, MPV_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, OPTIONS_CSS, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
 from isoplay.widgets import (  # noqa: E402
@@ -66,9 +65,7 @@ class Player(QMainWindow):
         cache_gb = self.settings.value("cache/gb", 2, type=int)
         media.DISK = DiskCache(Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "blocks",
                                cache_gb * GB)
-        # The engine (libVLC today, libmpv under ISOPLAY_ENGINE=mpv) owns playback and the
-        # surface the video is drawn in; the rest of this class talks to it and nothing else.
-        self.engine = create_engine()
+        self.engine = MpvEngine()
         self.disc = self.proxy = self.current = None
         self.disc_root, self.discs = None, ()
         self.ask_disc = False
@@ -549,11 +546,6 @@ class Player(QMainWindow):
             self.play(self.current, menus=self.use_menus, disc_root=root)
 
     def on_event(self, name):
-        if os.environ.get("ISOPLAY_DEBUG") and name.startswith("buffer:"):
-            now = time.monotonic()
-            print(f"[app buffer] {name} started={self.engine.time() > 0} "
-                  f"buffering={self.buffering} idle={max(self.osd_until, self.busy_until) < now} "
-                  f"menu={self.menu_active()}", flush=True)
         if name.startswith("buffer:"):
             pct = int(name[7:])
             if self.deadline:
@@ -596,8 +588,6 @@ class Player(QMainWindow):
                 self.fail("This wouldn't play")
 
     def menu_active(self):
-        """A disc menu waits for a choice, which the engine knows (libVLC reports it as buffering
-        at 0%; mpv through its disc-menu-active property)."""
         return bool(self.disc) and self.engine.menu_active()
 
     def arriving(self):
@@ -642,8 +632,9 @@ class Player(QMainWindow):
 
     def tracks_menu(self):
         menu = QMenu(self)
+        listed = self.engine.tracks()
         for title, kind in (("Audio", "audio"), ("Subtitles", "sub")):
-            tracks, current = self.engine.tracks()[kind]
+            tracks, current = listed[kind]
             if not menu.isEmpty():
                 menu.addSeparator()
             menu.addAction(title).setEnabled(False)
@@ -651,8 +642,8 @@ class Player(QMainWindow):
                 a = menu.addAction(label)
                 a.setCheckable(True)
                 a.setChecked(tid == current)
-                a.triggered.connect(lambda _=False, t=tid, k=kind, lb=label: (self.engine.select_track(k, t),
-                                                                             self.flash(f"{title}: {lb}", 1.5)))
+                a.triggered.connect(lambda _=False, t=tid, k=kind, n=title, lb=label: (
+                    self.engine.select_track(k, t), self.flash(f"{n}: {lb}", 1.5)))
             if not tracks:
                 menu.addAction("None").setEnabled(False)
         menu.addAction(self.act_subs)
@@ -788,10 +779,6 @@ class Player(QMainWindow):
         if now - self.opened_at >= 120:
             return
         t, length, pos = self.engine.time(), self.engine.length(), self.engine.position()
-        if os.environ.get("ISOPLAY_DEBUG"):
-            rate = self.proxy.rate() if self.arriving() else 0
-            print(f"[app menu] t={t} length={length} pos={pos:.3f} seen={self.menu_seen} "
-                  f"rate={rate:.0f}", flush=True)
         if self.menu_seen:
             return
         if self.arriving():
@@ -886,15 +873,16 @@ class Player(QMainWindow):
 
 
 def check():
-    """Bundle smoke test for CI: libVLC loads, the BD-J jar and JVM are where libbluray looks, and,
+    """Bundle smoke test for CI: libmpv loads, the BD-J jar and JVM are where libbluray looks, and,
     asked by the build, the pruned Qt still draws the window.
     Exit code only on Windows: a windowed exe has no stdout, and an uncaught error opens a dialog."""
     say = print if sys.stdout else (lambda *a: None)
     try:
-        say("libvlc", vlc.libvlc_get_version().decode())
-        assert vlc.Instance(["--no-video"]) is not None, "libvlc failed to start"
-        if VLC_DIR.is_dir():
-            assert Path(os.environ.get("LIBBLURAY_CP", "")).is_file(), "libbluray jar missing"
+        engine = MpvEngine()  # the app's own options: one a build lacks fails here, not at first play
+        say("libmpv", engine.player.mpv_version)
+        engine.shutdown()
+        if MPV_DIR.is_dir():
+            assert list(MPV_DIR.glob("libbluray-j2se-*.jar")), "libbluray jar missing"
             jvm = {"darwin": "lib/server/libjvm.dylib", "win32": "bin/server/jvm.dll"}.get(sys.platform, "lib/server/libjvm.so")
             assert (BASE / "jre" / jvm).is_file(), "bundled JRE missing"
             say("jar", os.environ["LIBBLURAY_CP"])
@@ -903,7 +891,7 @@ def check():
             app = QApplication.instance() or QApplication([])
             Player().close()  # every widget, icon and image the start screen draws
             say("qt", app.platformName())
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         say("check failed:", e)
         os._exit(1)
     say("ok")
@@ -921,13 +909,11 @@ def main():
         if result_file:
             updates.finish_update(result_file)
         return
-    if os.environ.get("ISOPLAY_ENGINE") == "mpv":
-        # mpv's render API needs a GL 3.2+ core context for its shaders and rectangle textures;
-        # macOS otherwise gives QOpenGLWidget its legacy 2.1 profile. Must precede QApplication.
-        fmt = QSurfaceFormat()
-        fmt.setVersion(3, 2)
-        fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
-        QSurfaceFormat.setDefaultFormat(fmt)
+    # mpv needs GL 3.2 core; macOS otherwise gives QOpenGLWidget legacy 2.1. Before QApplication.
+    surface_format = QSurfaceFormat()
+    surface_format.setVersion(3, 2)
+    surface_format.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    QSurfaceFormat.setDefaultFormat(surface_format)
     app = QApplication(sys.argv)
     app.setApplicationName("isoplay")
     app.setApplicationDisplayName(NAME)

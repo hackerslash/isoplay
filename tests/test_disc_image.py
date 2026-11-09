@@ -148,7 +148,7 @@ class ZipProjectionTests(unittest.TestCase):
 
 
 class TitleLiftTests(unittest.TestCase):
-    """Formats libVLC plays but cannot navigate: the main title is served as itself."""
+    """Formats mpv plays but cannot navigate: the main title is served as itself."""
 
     def test_hd_dvd_joins_its_own_evo_set_only(self):
         with iso_fixture({"/HVDVD_TS/HV000M01.EVO": b"trailer",
@@ -166,7 +166,7 @@ class TitleLiftTests(unittest.TestCase):
             self.addCleanup(view.close)
             self.assertEqual((view.name, view.read(0, view.size)), ("AVSEQ01.dat", b"onetwo"))
 
-    def test_an_image_with_nothing_playable_is_left_to_libvlc(self):
+    def test_an_image_with_nothing_playable_is_left_to_mpv(self):
         with iso_fixture({"/README.TXT": b"nothing here"}) as fp:
             self.assertIsNone(project_media(FileCache(fp)))
 
@@ -195,7 +195,7 @@ class TitleLiftTests(unittest.TestCase):
         self.addCleanup(projected.close)
         self.assertTrue(projected.has_udf())  # libbluray can read this, the file on disk it cannot
 
-    def test_a_lifted_title_keeps_its_name_so_libvlc_picks_the_demuxer(self):
+    def test_a_lifted_title_keeps_its_name_so_mpv_picks_the_demuxer(self):
         with iso_fixture({"/HVDVD_TS/HV001M01.EVO": b"feature"}) as fp:
             mrl, kind, proxy, _, _ = self._local("movie.iso", fp)
         self.assertEqual((kind, mrl), (None, "http://127.0.0.1:12345/HV001M01.evo"))

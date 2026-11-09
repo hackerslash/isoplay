@@ -30,12 +30,38 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Linux VLC packages
+      - run: pip install meson ninja jinja2
+      - name: macOS mpv dependencies
+        if: runner.os == 'macOS'
+        run: brew install pkgconf ffmpeg libplacebo libass libdvdnav libbluray ant
+      - name: Linux mpv dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvlc5 libvlccore9 vlc-plugin-base \
-            vlc-plugin-video-output libbluray-bdj libxcb-cursor0
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config ant libxcb-cursor0 \
+            libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
+            libavdevice-dev libass-dev libdvdnav-dev libbluray-dev libgl-dev libegl-dev
+          # mpv 0.42 needs libplacebo >= 7.387; Ubuntu 24.04 ships 6.338
+          git clone --depth 1 --branch v7.387.0 --recurse-submodules https://code.videolan.org/videolan/libplacebo.git /tmp/libplacebo
+          meson setup /tmp/libplacebo/build /tmp/libplacebo --buildtype=release --prefix=/usr/local \
+            -Dvulkan=disabled -Ddemos=false -Dtests=false
+          sudo "$(which ninja)" -C /tmp/libplacebo/build install
+          sudo ldconfig
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libplacebo mingw-w64-ucrt-x86_64-libass mingw-w64-ucrt-x86_64-libdvdnav
+            mingw-w64-ucrt-x86_64-libbluray
+      - name: Windows toolchain on PATH
+        if: runner.os == 'Windows'
+        run: |
+          choco install ant --no-progress -y
+          "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> $env:GITHUB_PATH
       - run: pip install -r requirements-build.txt
       - run: python -m unittest -v tests.test_updates tests.test_update_ui
       - run: python -m unittest -v tests.test_disc_image
@@ -43,7 +69,7 @@ jobs:
       - run: python -m tests.test_isoplay
         if: runner.os == 'Linux'
       - run: python build.py
-      - run: python -m unittest -v tests.test_welcome tests.test_player
+      - run: python -m unittest -v tests.test_welcome tests.test_player tests.test_engine
       - run: python -m tests.test_update_bundle
       - uses: actions/upload-artifact@v4
         with:

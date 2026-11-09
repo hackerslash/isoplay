@@ -15,7 +15,7 @@ from isoplay.theme import BADGES, ICON, INK, OPTIONS_CSS, badge_art, svg_icon
 
 
 class Overlay(QWidget):
-    """Floating child window: the video is a native libVLC surface, so Qt widgets can't paint over it."""
+    """Floating child window over the video."""
 
     def __init__(self, owner, clickable):
         flags = Qt.Tool | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint

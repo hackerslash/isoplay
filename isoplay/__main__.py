@@ -3,7 +3,7 @@ import sys
 
 
 def run():
-    # The updater helper must run before Qt/VLC load DLLs from the installation being replaced.
+    # The updater helper must run before Qt/libmpv load DLLs from the installation being replaced.
     if len(sys.argv) == 3 and sys.argv[1] == "--apply-update":
         from isoplay.updates import apply_update
         raise SystemExit(apply_update(sys.argv[2]))

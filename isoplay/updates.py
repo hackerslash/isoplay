@@ -1,6 +1,6 @@
 """GitHub release updates, verified staging, and a detached transactional installer.
 
-The staged app runs --apply-update before importing Qt or VLC. It waits for the
+The staged app runs --apply-update before importing Qt or libmpv. It waits for the
 old app to exit, swaps the installation, and restores it if the new app cannot
 finish starting. No shell, elevated permissions, or external installer is used.
 """
@@ -217,8 +217,7 @@ def _environment():
     else:
         env.pop("LD_LIBRARY_PATH", None)
     for key in list(env):
-        if key.startswith("_PYI_") or key in ("PYTHON_VLC_LIB_PATH", "PYTHON_VLC_MODULE_PATH", "VLC_PLUGIN_PATH",
-                                            "LIBBLURAY_CP", "JAVA_HOME"):
+        if key.startswith("_PYI_") or key in ("LIBMPV_PATH", "LIBBLURAY_CP", "JAVA_HOME"):
             env.pop(key, None)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
