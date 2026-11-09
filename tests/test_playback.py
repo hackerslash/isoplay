@@ -71,9 +71,10 @@ class RemoteDiscTests(unittest.TestCase):
         Origin.requests = 0
         mrl, kind, proxy, *_ = media.prepare(f"http://127.0.0.1:{self.server.server_port}/tiny-dvd.iso")
         self.assertEqual(kind, "dvd")
-        log = []
+        # printed as it comes, not on failure: a crash in libmpv takes the process before any except runs
         player = self.mpv.MPV(vo="null", ao="null", config="no", loglevel="v",
-                              log_handler=lambda level, prefix, text: log.append(f"[{prefix}] {text.rstrip()}"))
+                              log_handler=lambda level, prefix, text: print(f"[{prefix}] {text.rstrip()}",
+                                                                            file=sys.stderr, flush=True))
         try:
             player["dvd-device"] = mrl
             player["disc-menu"] = "no"
@@ -84,9 +85,6 @@ class RemoteDiscTests(unittest.TestCase):
                 self.assertLess(time.monotonic(), deadline, "the disc never played a second")
                 time.sleep(0.1)
             self.assertAlmostEqual(player.duration, 4.0, delta=0.5)
-        except BaseException:
-            print("\n".join(log[-300:]), file=sys.stderr)  # what mpv saw, the only clue on a CI runner
-            raise
         finally:
             player.terminate()
             proxy.close()

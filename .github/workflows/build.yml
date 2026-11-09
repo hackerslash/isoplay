@@ -53,7 +53,7 @@ jobs:
             -Dvulkan=disabled -Ddemos=false -Dtests=false
           sudo "$(which ninja)" -C /tmp/libplacebo/build install
           # Ubuntu's libdvdread 6.1 ignores stream callbacks without libdvdcss, so remote DVDs can't open
-          for lib in libdvdread/7.0.1/libdvdread-7.0.1 libdvdnav/7.0.0/libdvdnav-7.0.0; do
+          for lib in libdvdread/7.1.1/libdvdread-7.1.1 libdvdnav/7.0.0/libdvdnav-7.0.0; do
             curl -sfL "https://download.videolan.org/pub/videolan/$lib.tar.xz" | tar xJ -C /tmp
             src="/tmp/$(basename "$lib")"
             meson setup "$src/build" "$src" --buildtype=release --prefix=/usr/local
@@ -85,7 +85,7 @@ jobs:
       - run: python -m tests.test_isoplay
         if: runner.os == 'Linux'
       - run: python build.py
-      - run: python -m unittest -v tests.test_welcome tests.test_player tests.test_engine tests.test_playback tests.test_diskcache
+      - run: python -X faulthandler -m unittest -v tests.test_welcome tests.test_player tests.test_engine tests.test_playback tests.test_diskcache
       - run: python -m tests.test_update_bundle
       - uses: actions/upload-artifact@v4
         with:
