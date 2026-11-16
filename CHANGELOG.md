@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2
+
+- Clicking the seek bar keeps it at the spot you picked while that part loads, instead of
+  jumping back until it plays
+- The seek bar shades what is already loaded in green, and on titles lifted out of a disc image
+  what the disk cache holds in a dimmer green
+- Links whose server can't skip (it always sends the whole file) no longer stall when you seek:
+  the seek bar is off, ← → and Home only move within what has loaded, and they start from the
+  beginning instead of a remembered spot
+
 ## 0.4.1
 
 - ← and → skip 10 s on discs whenever no disc menu is on screen; they used to move the
