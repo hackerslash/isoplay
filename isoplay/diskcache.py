@@ -34,6 +34,14 @@ class DiskCache:
         except OSError:
             return None
 
+    def indexes(self, key):
+        try:
+            names = os.listdir(self.root / key[:2]) if self.limit else ()
+        except OSError:
+            return set()
+        prefix = f"{key}-"
+        return {int(n[len(prefix):]) for n in names if n.startswith(prefix) and n[len(prefix):].isdigit()}
+
     def has(self, key, index):
         return bool(self.limit) and self._path(key, index).is_file()
 

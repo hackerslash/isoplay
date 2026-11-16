@@ -444,6 +444,7 @@ class Blocks:
         self.size = self._size() if size is None else size  # a share already knows it
         validator = getattr(self.upstream, "validator", None)
         self.disk_key = DiskCache.key(bare(url) + (f"|{validator}" if validator else ""), self.size, self.bs)
+        self.saved = None  # block indexes on disk, listed on first on_disk()
 
     def _streams(self):
         return int(self.limit)
@@ -508,6 +509,8 @@ class Blocks:
                 self.memory.put((self.tag, first + k), part)
                 if store and DISK:  # what a reader asked for; read-ahead of a film would flush the menus
                     DISK.put(self.disk_key, first + k, part)
+                    if self.saved is not None:
+                        self.saved.add(first + k)
             for future, part in zip(futures, parts):
                 future.set_result(part)
         except BaseException as e:
@@ -581,6 +584,12 @@ class Blocks:
             while self.arrivals and self.arrivals[0][0] < time.monotonic() - RATE_WINDOW:
                 self.arrivals.popleft()
             return sum(size for _, size in self.arrivals) / RATE_WINDOW
+
+    def on_disk(self):
+        # ponytail: evictions while open go unseen until the next open
+        if self.saved is None:
+            self.saved = DISK.indexes(self.disk_key) if DISK else set()
+        return self.saved
 
     def peek(self, pos, n):
         """A few bytes straight from upstream, without fetching or caching the block around them."""
@@ -875,6 +884,7 @@ BARE_HOST = re.compile(r"[\w-]+(\.[\w-]+)+(/.*)?")
 DEAD = {401, 402, 403, 404, 410, 451}  # the link is wrong; other 4xx may just be an unloved Range
 SNIFF = 32776  # enough to reach the volume descriptor at sector 16
 PLAIN = (None, None, (), None)  # kind, proxy, disc roots, chosen root: hand it straight to the player
+UNSEEKABLE = set()  # links whose server answered a Range request with the whole file
 
 
 def suffix(src):
@@ -923,6 +933,8 @@ def probe(url):
         return None, None
     head = r.read()
     _not_a_page(headers, head)
+    if r.status == 200:
+        UNSEEKABLE.add(url)
     total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
     size = int(total) if r.status == 206 and total.isdigit() else None
     if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):

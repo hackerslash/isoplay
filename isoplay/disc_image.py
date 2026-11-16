@@ -210,6 +210,24 @@ class _FileView(io.RawIOBase):
     def read(self, pos, size):
         return self.fp.pread(pos, size)
 
+    def disk_fractions(self):
+        # ponytail: byte fractions stand in for time, so variable bitrate shades slightly off
+        cache = getattr(self.fp, "cache", None)
+        cache = getattr(cache, "cache", cache)  # a share file has its own block cache
+        if not hasattr(cache, "on_disk") or not self.size:
+            return []
+        saved, bs, out = sorted(cache.on_disk()), cache.bs, []
+        for start, (offset, length) in zip(self.fp.starts, self.fp.parts):
+            lo, hi = bisect.bisect_left(saved, offset // bs), bisect.bisect_right(saved, (offset + length - 1) // bs)
+            for i in saved[lo:hi]:
+                a = start + max(i * bs, offset) - offset
+                b = start + min((i + 1) * bs, offset + length) - offset
+                if out and out[-1][1] >= a:
+                    out[-1][1] = b
+                else:
+                    out.append([a, b])
+        return [(a / self.size, b / self.size) for a, b in out]
+
     def close(self):
         self.fp.close()
         super().close()

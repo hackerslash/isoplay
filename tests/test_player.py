@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from isoplay.app import Player
 from isoplay import media
 from isoplay.media import prepare
+from isoplay.mpv import MpvEngine
 
 
 def waiting(**overrides):
@@ -367,13 +368,35 @@ class ResumeTests(unittest.TestCase):
         player = Mock(token=0, current="https://host/film.mkv", disc=None, use_menus=True)
         player.resume.return_value = {"https://host/film.mkv": {"t": 745, "at": 1}}
         Player.start(player, 0, ("http://127.0.0.1/disc.iso", None, None, (), None))
-        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind=None, menus=True, start=745)
+        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind=None, menus=True, start=745,
+                                                   seekable=True)
+
+    def test_a_link_without_range_support_opens_unseekable_from_the_start(self):
+        player = Mock(token=0, current="https://host/film.mkv", disc=None, use_menus=True)
+        player.resume.return_value = {"https://host/film.mkv": {"t": 745, "at": 1}}
+        with mock.patch("isoplay.media._fetch", return_value=media._Body(200, {}, b"\0" * 64)):
+            result = prepare("https://host/film.mkv")
+        Player.start(player, 0, result)
+        player.engine.open.assert_called_once_with("https://host/film.mkv", kind=None, menus=True, start=0,
+                                                   seekable=False)
+        player.seek.setEnabled.assert_called_once_with(False)
+
+    def test_an_unseekable_link_only_seeks_inside_its_cache(self):
+        player = Mock(seekable=False)
+        player.engine.time.return_value, player.engine.length.return_value = 60_000, 600_000
+        player.engine.state = {"demuxer_cache_state": {"seekable-ranges": [{"start": 30.0, "end": 75.0}]}}
+        player.engine.cached_ranges = lambda: MpvEngine.cached_ranges(player.engine)
+        player.engine.cached = lambda ms: MpvEngine.cached(player.engine, ms)
+        Player.seek_by(player, -10_000)
+        Player.seek_by(player, 30_000)
+        player.engine.seek.assert_called_once_with(50_000)
 
     def test_a_disc_with_menus_starts_from_the_beginning(self):
         player = Mock(token=0, current="https://host/disc.iso", disc="bluray", use_menus=True)
         player.resume.return_value = {"https://host/disc.iso": {"t": 745, "at": 1}}
         Player.start(player, 0, ("http://127.0.0.1/disc.iso", "bluray", None, (), None))
-        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind="bluray", menus=True, start=0)
+        player.engine.open.assert_called_once_with("http://127.0.0.1/disc.iso", kind="bluray", menus=True, start=0,
+                                                   seekable=True)
 
 
 class PreferenceTests(unittest.TestCase):

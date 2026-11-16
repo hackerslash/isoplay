@@ -6,12 +6,44 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
-    QVBoxLayout, QWidget, QWidgetAction,
+    QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QSlider,
+    QStyle, QStyleOptionSlider, QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from isoplay.media import DISC_EXT, ago, origin, suffix
 from isoplay.theme import BADGES, ICON, INK, OPTIONS_CSS, badge_art, svg_icon
+
+
+class SeekBar(QSlider):
+    """Shades buffered (start, end) fractions: bright in memory, dim on disk."""
+    CACHED = QColor(110, 220, 140, 190)
+    SAVED = QColor(110, 220, 140, 80)
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.ranges, self.saved = [], []
+
+    def set_ranges(self, ranges, saved):
+        if (ranges, saved) != (self.ranges, self.saved):
+            self.ranges, self.saved = ranges, saved
+            self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not (self.ranges or self.saved):
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        p = QPainter(self)
+        for color, ranges in ((self.SAVED, self.saved), (self.CACHED, self.ranges)):
+            for start, end in ranges:  # ahead of the handle only; behind it is the played bar
+                left = max(groove.x() + groove.width() * start, handle.right() + 1)
+                right = groove.x() + groove.width() * end
+                if right > left:
+                    p.fillRect(QRectF(left, groove.y(), right - left, groove.height()), color)
+        p.end()
 
 
 class Overlay(QWidget):

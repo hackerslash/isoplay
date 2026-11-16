@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pycdlib
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from isoplay import media
+from isoplay import disc_image, media
 from isoplay.app import Player
 from isoplay.disc_image import CacheFile, project_iso9660, project_media, project_zip
 from PySide6.QtWidgets import QApplication, QMenu
@@ -252,6 +252,11 @@ class NestedImageTests(unittest.TestCase):
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_a_lifted_title_reports_the_blocks_on_disk_as_fractions(self):
+        cache = SimpleNamespace(size=100, bs=10, on_disk=lambda: {2, 3, 7})
+        title = disc_image._FileView(disc_image._ExtentFile(cache, [(25, 30), (60, 20)]), "t.evo")
+        self.assertEqual(title.disk_fractions(), [(0.0, 0.3), (0.8, 1.0)])
+
     def test_opening_menu_only_for_multiple_discs(self):
         for roots in (("/FEATURE", "/BONUS"), ("",), None):
             with self.subTest(roots=roots):
@@ -259,7 +264,7 @@ class ProjectionTests(unittest.TestCase):
                 player = SimpleNamespace(token=1, ask_disc=True, current="image.iso", use_menus=True,
                                          chooser=Mock(), stack=Mock(), engine=Mock(), resume=lambda: {},
                                          remember=Mock(), flash=Mock(), menu_btn=Mock(), act_discmenu=Mock(),
-                                         apply_fit=Mock())
+                                         apply_fit=Mock(), seek=Mock())
                 result = ("http://127.0.0.1/disc.iso", "bluray" if roots else None, proxy,
                           roots or (), roots[0] if roots else None)
                 Player.start(player, 1, result)

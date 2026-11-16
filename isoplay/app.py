@@ -29,7 +29,7 @@ from isoplay.runtime import BASE, MPV_DIR  # noqa: E402
 from isoplay.theme import CSS, ICON, INK, MAC, MENU_CSS, MOD, OPTIONS_CSS, svg_icon, tabular  # noqa: E402
 from isoplay.update_ui import UpdateUI  # noqa: E402
 from isoplay.widgets import (  # noqa: E402
-    DiscChooser, Loader, OptionsMenu, Overlay, RecentRow, disc_label,
+    DiscChooser, Loader, OptionsMenu, Overlay, RecentRow, SeekBar, disc_label,
 )
 
 NAME = "isoplay" if getattr(sys, "frozen", False) else "isoplay (dev)"
@@ -133,6 +133,9 @@ class Player(QMainWindow):
         self.menu_seen = False  # disc-menu-active was ever true: the menu runs, however slowly
         self.stalls, self.stall_from = [], 0.0  # when long buffering ended, and when the current one began
         self.seek_from = 0.0  # when the current unreported seek started freezing the picture
+        self.seek_hold = None  # (slider value, when): shown until playback catches up
+        self.seekable = True  # False: server ignores Range, seeks stay inside mpv's cache
+        self.saved, self.saved_at = [], 0.0  # disk-cached fractions of a lifted title
 
         self.timer = QTimer(self, interval=100, timeout=self.tick)
         self.timer.start()
@@ -432,8 +435,8 @@ class Player(QMainWindow):
         bottom.setSpacing(10)
         self.pos_lbl = tabular(QLabel("0:00", objectName="time", minimumWidth=44,
                                       alignment=Qt.AlignRight | Qt.AlignVCenter))
-        self.seek = QSlider(Qt.Horizontal, maximum=10000, focusPolicy=Qt.NoFocus)
-        self.seek.sliderReleased.connect(lambda: self.engine.set_position(self.seek.value() / 10000))
+        self.seek = SeekBar(Qt.Horizontal, maximum=10000, focusPolicy=Qt.NoFocus)
+        self.seek.sliderReleased.connect(self.seek_released)
         self.seek.sliderMoved.connect(lambda v: self.pos_lbl.setText(fmt(int(self.engine.length() * v / 10000))))
         self.len_btn = tabular(QPushButton("0:00", objectName="time", focusPolicy=Qt.NoFocus, minimumWidth=50,
                                            cursor=Qt.PointingHandCursor, toolTip="Show remaining or total time"))
@@ -442,6 +445,10 @@ class Player(QMainWindow):
         bottom.addWidget(self.seek, 1)
         bottom.addWidget(self.len_btn)
         v.addLayout(bottom)
+
+    def seek_released(self):
+        self.seek_hold = (self.seek.value(), time.monotonic())
+        self.engine.set_position(self.seek.value() / 10000)
 
     # --- recent ------------------------------------------------------------------------------------
 
@@ -594,6 +601,7 @@ class Player(QMainWindow):
         self.refresh_recent()
         self.stack.setCurrentWidget(self.welcome)
         self.osd_until = self.busy_until = self.deadline = 0
+        self.saved, self.saved_at = [], 0.0
 
     def play(self, src, menus=None, disc_root=None):
         if not src:
@@ -639,11 +647,14 @@ class Player(QMainWindow):
             self.osd_until = self.busy_until = 0
             return
         resume = 0
-        if not (self.disc and self.use_menus):
+        self.seekable = seekable = mrl not in media.UNSEEKABLE
+        self.seek.setEnabled(seekable)
+        self.seek_hold = None
+        if seekable and not (self.disc and self.use_menus):
             entry = self.resume().get(self.current)
             if isinstance(entry, dict) and entry.get("t"):
                 resume = entry["t"]
-        self.engine.open(mrl, kind=self.disc, menus=self.use_menus, start=resume)
+        self.engine.open(mrl, kind=self.disc, menus=self.use_menus, start=resume, seekable=seekable)
         self.apply_fit()
         self.deadline = time.monotonic() + STALL
         self.opened_at, self.stuck_at, self.stalls = time.monotonic(), (-1, 0.0), []
@@ -754,6 +765,9 @@ class Player(QMainWindow):
 
     def seek_by(self, ms):
         target = max(0, self.engine.time() + ms)
+        if not self.seekable and not self.engine.cached(target):
+            self.flash("Not loaded yet: this link can't skip ahead", 1.5)
+            return
         self.engine.seek(target)
         self.flash(f"{fmt(target)} / {fmt(self.engine.length())}", 1.2)
 
@@ -903,8 +917,23 @@ class Player(QMainWindow):
                 self.play_btn.setIcon(icon)
             length, t = self.engine.length(), self.engine.time()
             if not self.seek.isSliderDown():
-                self.seek.setValue(int(self.engine.position() * 10000))
+                value = int(self.engine.position() * 10000)
+                if self.seek_hold:
+                    target, at = self.seek_hold
+                    settled = now - at > 1 and not self.engine.seeking() and not self.buffering
+                    if abs(value - target) < 100 or settled:
+                        self.seek_hold = None
+                    else:
+                        value = target
+                self.seek.setValue(value)
                 self.pos_lbl.setText(fmt(t))
+            seconds = length / 1000
+            if now - self.saved_at >= 2:
+                view = getattr(self.proxy, "view", None)
+                self.saved_at = now
+                self.saved = view.disk_fractions() if hasattr(view, "disk_fractions") else []
+            self.seek.set_ranges([(round(a / seconds, 3), round(min(b, seconds) / seconds, 3))
+                                  for a, b in self.engine.cached_ranges()] if seconds > 0 else [], self.saved)
             self.len_btn.setText(f"-{fmt(length - t)}" if self.remaining and length > 0 else fmt(length))
 
     def watch_menu(self, now):
@@ -951,7 +980,7 @@ class Player(QMainWindow):
         disc_nav = self.menu_active()
         if k in (Qt.Key_Left, Qt.Key_Right) and (shift or not disc_nav):
             self.seek_by(10000 if k == Qt.Key_Right else -10000)
-        elif k == Qt.Key_Home:
+        elif k == Qt.Key_Home and (self.seekable or self.engine.cached(0)):
             self.engine.seek(0)
         elif k in (Qt.Key_Up, Qt.Key_Down) and not disc_nav:
             self.nudge_volume(5 if k == Qt.Key_Up else -5)

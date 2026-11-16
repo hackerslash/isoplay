@@ -153,7 +153,8 @@ OPTIONS = {
 # Polled by the app every tick. Read from values mpv pushes, never by asking it: a get blocks
 # until mpv's core is free, and a disc seek over a slow link holds the core for seconds.
 STATE = ("time-pos", "duration", "percent-pos", "core-idle", "pause", "mute", "disc-menu-active", "seeking",
-         "chapters", "chapter", "track-list", "aid", "sid", "playlist-count", "video-params")
+         "chapters", "chapter", "track-list", "aid", "sid", "playlist-count", "video-params",
+         "demuxer-cache-state")
 SPDIF = "ac3,eac3,dts,dts-hd,truehd"
 USERINFO = re.compile(r"(://)[^/\s@]+@")
 
@@ -331,7 +332,7 @@ class MpvEngine:
 
     # --- media ---------------------------------------------------------------------------------------
 
-    def open(self, mrl, kind=None, menus=True, start=0):
+    def open(self, mrl, kind=None, menus=True, start=0, seekable=True):
         self._vout = False
         self._stalled = self._seeking = False
         self._cache_state = None
@@ -346,8 +347,12 @@ class MpvEngine:
             target = "bd://" if kind == "bluray" else "dvd://"
         else:
             target = mrl
-        if start > 0:
-            self._send("loadfile", target, "replace", -1, f"start={start:.3f}")
+        # force-seekable=no keeps mpv's seeks inside its cache
+        options = [f"start={start:.3f}"] if start > 0 else []
+        if not seekable:
+            options.append("force-seekable=no")
+        if options:
+            self._send("loadfile", target, "replace", -1, ",".join(options))
         else:
             self._send("loadfile", target, "replace")
 
@@ -382,6 +387,13 @@ class MpvEngine:
 
     def seeking(self):
         return bool(self.state.get("seeking"))
+
+    def cached_ranges(self):
+        ranges = (self.state.get("demuxer_cache_state") or {}).get("seekable-ranges") or ()
+        return [(r["start"], r["end"]) for r in ranges]
+
+    def cached(self, ms):
+        return any(start <= ms / 1000 <= end for start, end in self.cached_ranges())
 
     # --- transport -----------------------------------------------------------------------------------
 
